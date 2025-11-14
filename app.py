@@ -21,28 +21,22 @@ def get_novaengel_token():
     }
 
     r = requests.post(url, json=payload)
-    print("🔍 Réponse brute Nova Engel :", r.text)  # Debug
+    print("🔍 Réponse brute Nova Engel :", r.text)
     r.raise_for_status()
-
     data = r.json()
-
-    # Correction : "Token" majuscule dans la réponse
     token = data.get("Token") or data.get("token")
     if not token:
         raise Exception(f"Réponse inattendue de Nova Engel : {data}")
-
     return token
 
 # === 2) STOCK NOVA ENGEL ===
 def get_novaengel_stock():
     print("🔄 Connexion à Nova Engel...")
     token = get_novaengel_token()
-
     print("🔄 Récupération du stock Nova Engel...")
     url = f"https://drop.novaengel.com/api/stock/update/{token}"
     r = requests.get(url)
     r.raise_for_status()
-
     stock_data = r.json()
     print(f"📦 {len(stock_data)} produits trouvés dans Nova Engel")
     return stock_data
@@ -137,6 +131,19 @@ def run_sync():
 
     threading.Thread(target=sync_all_products).start()
     return jsonify({"status": "🚀 Synchronisation lancée"}), 200
+
+@app.route("/admin-button", methods=["GET"])
+def admin_button():
+    return '''
+        <h2>🔄 Synchronisation NovaEngel</h2>
+        <button onclick="
+            fetch('/sync?key=' + encodeURIComponent('{}'))
+            .then(r => r.json())
+            .then(j => alert(JSON.stringify(j)))
+        ">
+            Lancer la synchronisation
+        </button>
+    '''.format(SECRET_KEY)
 
 @app.route("/", methods=["GET"])
 def home():
