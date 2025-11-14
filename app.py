@@ -15,13 +15,8 @@ app = Flask(__name__)
 # === 1) AUTOMATIC LOGIN NOVA ENGEL ===
 def get_novaengel_token():
     url = "https://drop.novaengel.com/api/login"
-    payload = {
-        "user": NOVA_USER,
-        "password": NOVA_PASS
-    }
-
+    payload = {"user": NOVA_USER, "password": NOVA_PASS}
     r = requests.post(url, json=payload)
-    print("🔍 Réponse brute Nova Engel :", r.text)
     r.raise_for_status()
     data = r.json()
     token = data.get("Token") or data.get("token")
@@ -31,23 +26,18 @@ def get_novaengel_token():
 
 # === 2) STOCK NOVA ENGEL ===
 def get_novaengel_stock():
-    print("🔄 Connexion à Nova Engel...")
     token = get_novaengel_token()
-    print("🔄 Récupération du stock Nova Engel...")
     url = f"https://drop.novaengel.com/api/stock/update/{token}"
     r = requests.get(url)
     r.raise_for_status()
     stock_data = r.json()
-    print(f"📦 {len(stock_data)} produits trouvés dans Nova Engel")
     return stock_data
 
 # === SHOPIFY FUNCTIONS ===
 def get_all_shopify_products():
-    print("🔄 Récupération des produits Shopify...")
     all_products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
-
     while url:
         r = requests.get(url, headers=headers)
         r.raise_for_status()
@@ -58,8 +48,6 @@ def get_all_shopify_products():
             url = extract_next_url(link_header)
         else:
             url = None
-
-    print(f"🛍️ {len(all_products)} produits trouvés sur Shopify")
     return all_products
 
 def extract_next_url(link_header):
@@ -78,21 +66,15 @@ def get_shopify_location_id():
 
 def update_shopify_stock(inventory_item_id, location_id, stock):
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/inventory_levels/set.json"
-    headers = {
-        "X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN,
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "location_id": location_id,
-        "inventory_item_id": inventory_item_id,
-        "available": stock
-    }
+    headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN, "Content-Type": "application/json"}
+    payload = {"location_id": location_id, "inventory_item_id": inventory_item_id, "available": stock}
     r = requests.post(url, json=payload, headers=headers)
     r.raise_for_status()
     return True
 
 # === SYNC MAIN LOGIC ===
 def sync_all_products():
+    modified_products = []
     try:
         nova_stock_data = get_novaengel_stock()
         shopify_products = get_all_shopify_products()
@@ -103,24 +85,23 @@ def sync_all_products():
             for i in nova_stock_data if i.get("Id")
         }
 
-        updated_count = 0
-
         for product in shopify_products:
             for variant in product["variants"]:
                 sku = variant["sku"].strip().replace("'", "")
                 if sku in nova_stock_map:
                     new_stock = nova_stock_map[sku]
                     old_stock = variant["inventory_quantity"]
-
                     if new_stock != old_stock:
                         update_shopify_stock(variant["inventory_item_id"], location_id, new_stock)
-                        updated_count += 1
-                        print(f"✅ {product['title']} (SKU {sku}) : {old_stock} → {new_stock}")
-
-        print(f"📊 {updated_count} produits mis à jour")
-
+                        modified_products.append({
+                            "title": product["title"],
+                            "sku": sku,
+                            "old_stock": old_stock,
+                            "new_stock": new_stock
+                        })
     except Exception as e:
         print(f"❌ Erreur: {e}")
+    return modified_products
 
 # === ROUTES ===
 @app.route("/sync", methods=["GET"])
@@ -129,21 +110,76 @@ def run_sync():
     if key != SECRET_KEY:
         return jsonify({"error": "❌ Accès non autorisé"}), 403
 
-    threading.Thread(target=sync_all_products).start()
-    return jsonify({"status": "🚀 Synchronisation lancée"}), 200
+    # Lancer la sync dans un thread et attendre la fin pour retourner les produits modifiés
+    results = []
+    def thread_func():
+        nonlocal results
+        results = sync_all_products()
 
-@app.route("/admin-button", methods=["GET"])
+    thread = threading.Thread(target=thread_func)
+    thread.start()
+    thread.join()  # attend que la sync se termine
+
+    return jsonify({"status": "🚀 Synchronisation terminée", "products": results}), 200
+
+@app.route("/admin-button")
 def admin_button():
     return '''
-        <h2>🔄 Synchronisation NovaEngel</h2>
-        <button onclick="
-            fetch('/sync?key=' + encodeURIComponent('{}'))
-            .then(r => r.json())
-            .then(j => alert(JSON.stringify(j)))
+    <div style="font-family:Arial,sans-serif; max-width:800px; margin:20px auto;">
+        <h2 style="color:#008060;">🔄 Synchronisation NovaEngel</h2>
+        <button id="syncBtn" style="
+            background-color:#5c6ac4;
+            color:white;
+            border:none;
+            padding:12px 24px;
+            border-radius:6px;
+            font-size:16px;
+            cursor:pointer;
         ">
             Lancer la synchronisation
         </button>
-    '''.format(SECRET_KEY)
+        <div id="loader" style="display:none; margin-top:15px;">
+            <p style="color:#555;">🔄 Synchronisation en cours...</p>
+        </div>
+        <div id="syncResults" style="margin-top:20px;"></div>
+    </div>
+
+    <script>
+    const btn = document.getElementById("syncBtn");
+    const loader = document.getElementById("loader");
+    const resultsDiv = document.getElementById("syncResults");
+
+    btn.onclick = () => {
+        resultsDiv.innerHTML = "";
+        loader.style.display = "block";
+        fetch('/sync?key=pl0reals')
+            .then(r => r.json())
+            .then(data => {
+                loader.style.display = "none";
+                if(data.products && data.products.length > 0){
+                    let html = "<h3 style='color:#008060;'>✅ Produits modifiés :</h3>";
+                    data.products.forEach(p => {
+                        html += `
+                            <div style='border:1px solid #ddd; padding:10px; margin-bottom:5px; border-radius:4px;'>
+                                <strong>${p.title}</strong> (SKU ${p.sku}): 
+                                <span style='color:#c00;'>${p.old_stock}</span> → 
+                                <span style='color:#008060;'>${p.new_stock}</span>
+                            </div>
+                        `;
+                    });
+                    resultsDiv.innerHTML = html;
+                } else {
+                    resultsDiv.innerHTML = "<p style='color:#555;'>Aucun produit n’a été modifié.</p>";
+                }
+            })
+            .catch(err => {
+                loader.style.display = "none";
+                resultsDiv.innerHTML = "<p style='color:#c00;'>❌ Erreur lors de la synchronisation</p>";
+                console.error(err);
+            });
+    }
+    </script>
+    '''
 
 @app.route("/", methods=["GET"])
 def home():
