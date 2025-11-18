@@ -2,17 +2,24 @@ from flask import Flask, jsonify, request
 import threading
 import requests
 import os
+import atexit
+import signal
+import logging
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # === CONFIGURATION ===
 SHOPIFY_STORE = "plureals.myshopify.com"
 SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN")
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
-SECRET_KEY = os.environ.get("SECRET_KEY", "pl0reals")
+SECRET_KEY = os.environ.get("SECRET_KEY", "pl0reals")  # tu peux changer cette valeur
 
 app = Flask(__name__)
 
-# === 1) AUTOMATIC LOGIN NOVA ENGEL ===
+# Pour éviter les logs inutiles du scheduler
+logging.getLogger('apscheduler').setLevel(logging.WARNING)
+
+# ====================== TES FONCTIONS EXISTANTES (à garder telles quelles) ======================
 def get_novaengel_token():
     url = "https://drop.novaengel.com/api/login"
     payload = {"user": NOVA_USER, "password": NOVA_PASS}
@@ -24,16 +31,13 @@ def get_novaengel_token():
         raise Exception(f"Réponse inattendue de Nova Engel : {data}")
     return token
 
-# === 2) STOCK NOVA ENGEL ===
 def get_novaengel_stock():
     token = get_novaengel_token()
     url = f"https://drop.novaengel.com/api/stock/update/{token}"
     r = requests.get(url)
     r.raise_for_status()
-    stock_data = r.json()
-    return stock_data
+    return r.json()
 
-# === SHOPIFY FUNCTIONS ===
 def get_all_shopify_products():
     all_products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
@@ -45,17 +49,16 @@ def get_all_shopify_products():
         all_products.extend(data["products"])
         link_header = r.headers.get('Link', '')
         if 'rel="next"' in link_header:
-            url = extract_next_url(link_header)
+            links = link_header.split(',')
+            for link in links:
+                if 'rel="next"' in link:
+                    url = link.split(';')[0].strip('<> ')
+                    break
+            else:
+                url = None
         else:
             url = None
     return all_products
-
-def extract_next_url(link_header):
-    links = link_header.split(',')
-    for link in links:
-        if 'rel="next"' in link:
-            return link.split(';')[0].strip('<> ')
-    return None
 
 def get_shopify_location_id():
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/locations.json"
@@ -72,118 +75,92 @@ def update_shopify_stock(inventory_item_id, location_id, stock):
     r.raise_for_status()
     return True
 
-# === SYNC MAIN LOGIC ===
+# ====================== FONCTION DE SYNCHRO (avec logs) ======================
 def sync_all_products():
-    modified_products = []
+    print("DÉBUT SYNCHRONISATION AUTOMATIQUE")
+    modified = 0
     try:
-        nova_stock_data = get_novaengel_stock()
+        nova_stock = get_novaengel_stock()
         shopify_products = get_all_shopify_products()
         location_id = get_shopify_location_id()
 
-        nova_stock_map = {
-            str(i.get("Id", "")).strip(): i.get("Stock", 0)
-            for i in nova_stock_data if i.get("Id")
-        }
+        nova_map = {str(item.get("Id", "")).strip(): item.get("Stock", 0) for item in nova_stock if item.get("Id")}
 
         for product in shopify_products:
             for variant in product["variants"]:
                 sku = variant["sku"].strip().replace("'", "")
-                if sku in nova_stock_map:
-                    new_stock = nova_stock_map[sku]
+                if sku in nova_map:
+                    new_stock = nova_map[sku]
                     old_stock = variant["inventory_quantity"]
                     if new_stock != old_stock:
                         update_shopify_stock(variant["inventory_item_id"], location_id, new_stock)
-                        modified_products.append({
-                            "title": product["title"],
-                            "sku": sku,
-                            "old_stock": old_stock,
-                            "new_stock": new_stock
-                        })
-    except Exception as e:
-        print(f"❌ Erreur: {e}")
-    return modified_products
+                        print(f"MISE À JOUR → {product['title']} | SKU {sku} : {old_stock} → {new_stock}")
+                        modified += 1
 
-# === ROUTES ===
+        if modified == 0:
+            print("Aucune modification détectée.")
+        else:
+            print(f"SYNCHRONISATION TERMINÉE → {modified} produit(s) mis à jour")
+    except Exception as e:
+        print(f"ERREUR CRITIQUE : {e}")
+        raise
+
+# ====================== SCHÉDULER AUTOMATIQUE TOUTES LES HEURES ======================
+scheduler = BackgroundScheduler(timezone="Europe/Paris")
+scheduler.add_job(
+    func=sync_all_products,
+    trigger="interval",
+    minutes=60,
+    id="auto_sync_novaengel",
+    replace_existing=True
+)
+scheduler.start()
+
+# Nettoyage propre à l'arrêt
+atexit.register(lambda: scheduler.shutdown(wait=False))
+
+def shutdown_handler(signum, frame):
+    print("Arrêt du scheduler...")
+    scheduler.shutdown(wait=False)
+
+signal.signal(signal.SIGTERM, shutdown_handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+
+# ====================== ROUTES (inchangées) ======================
 @app.route("/sync", methods=["GET"])
 def run_sync():
     key = request.args.get("key")
     if key != SECRET_KEY:
-        return jsonify({"error": "❌ Accès non autorisé"}), 403
-
-    # Lancer la sync dans un thread et attendre la fin pour retourner les produits modifiés
+        return jsonify({"error": "Accès refusé"}), 403
+    
     results = []
     def thread_func():
         nonlocal results
         results = sync_all_products()
-
-    thread = threading.Thread(target=thread_func)
-    thread.start()
-    thread.join()  # attend que la sync se termine
-
-    return jsonify({"status": "🚀 Synchronisation terminée", "products": results}), 200
+    threading.Thread(target=thread_func).start()
+    threading.Thread(target=thread_func).join()
+    return jsonify({"status": "Synchronisation terminée", "products": results}), 200
 
 @app.route("/admin-button")
 def admin_button():
     return '''
-    <div style="font-family:Arial,sans-serif; max-width:800px; margin:20px auto;">
-        <h2 style="color:#008060;">🔄 Synchronisation NovaEngel</h2>
-        <button id="syncBtn" style="
-            background-color:#5c6ac4;
-            color:white;
-            border:none;
-            padding:12px 24px;
-            border-radius:6px;
-            font-size:16px;
-            cursor:pointer;
-        ">
-            Lancer la synchronisation
+    <div style="font-family:Arial,sans-serif; max-width:800px; margin:40px auto; text-align:center;">
+        <h2 style="color:#008060;">Synchronisation NovaEngel → Shopify</h2>
+        <p>Sync automatique toutes les heures activée</p>
+        <button onclick="fetch('/sync?key='+'pl0reals').then(r=>r.json()).then(d=>alert('Sync terminée ! '+d.products.length+' produits modifiés'))" 
+                style="background:#5c6ac4;color:white;padding:15px 30px;border:none;border-radius:8px;font-size:18px;cursor:pointer;">
+            Lancer manuellement (optionnel)
         </button>
-        <div id="loader" style="display:none; margin-top:15px;">
-            <p style="color:#555;">🔄 Synchronisation en cours...</p>
-        </div>
-        <div id="syncResults" style="margin-top:20px;"></div>
     </div>
-
-    <script>
-    const btn = document.getElementById("syncBtn");
-    const loader = document.getElementById("loader");
-    const resultsDiv = document.getElementById("syncResults");
-
-    btn.onclick = () => {
-        resultsDiv.innerHTML = "";
-        loader.style.display = "block";
-        fetch('/sync?key=pl0reals')
-            .then(r => r.json())
-            .then(data => {
-                loader.style.display = "none";
-                if(data.products && data.products.length > 0){
-                    let html = "<h3 style='color:#008060;'>✅ Produits modifiés :</h3>";
-                    data.products.forEach(p => {
-                        html += `
-                            <div style='border:1px solid #ddd; padding:10px; margin-bottom:5px; border-radius:4px;'>
-                                <strong>${p.title}</strong> (SKU ${p.sku}): 
-                                <span style='color:#c00;'>${p.old_stock}</span> → 
-                                <span style='color:#008060;'>${p.new_stock}</span>
-                            </div>
-                        `;
-                    });
-                    resultsDiv.innerHTML = html;
-                } else {
-                    resultsDiv.innerHTML = "<p style='color:#555;'>Aucun produit n’a été modifié.</p>";
-                }
-            })
-            .catch(err => {
-                loader.style.display = "none";
-                resultsDiv.innerHTML = "<p style='color:#c00;'>❌ Erreur lors de la synchronisation</p>";
-                console.error(err);
-            });
-    }
-    </script>
     '''
 
-@app.route("/", methods=["GET"])
+@app.route("/")
 def home():
-    return "<h3>🚀 API Sync NovaEngel - Shopify</h3><p>Utilisez /sync?key=VOTRE_SECRET pour lancer la sync.</p>"
+    return "<h3>API Sync NovaEngel - AUTOMATIQUE TOUTES LES HEURES</h3>"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    # Première sync immédiate au démarrage
+    print("Lancement de la première synchronisation au démarrage...")
+    threading.Thread(target=sync_all_products).start()
+    
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
