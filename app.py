@@ -18,20 +18,22 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "pl0reals")
 app = Flask(__name__)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
-# Session toute simple – ON NE MET PLUS JAMAIS DE RETRY AUTOMATIQUE
 session = requests.Session()
 
-# ====================== GESTION 429 MANUELLE (INFALLIBLE) ======================
+# ====================== GESTION 429 INFALLIBLE ======================
 def shopify_request(method, url, **kwargs):
-    for attempt = 0
+    attempt = 0
     while True:
-        time.sleep(0.7)  # on reste très cool avec le rate limit
+        time.sleep(0.7)  # on reste très tranquille
         try:
             r = session.request(method, url, **kwargs, timeout=30)
             if r.status_code == 429:
-                retry_after = r.headers.get("Retry-After")
-                wait = 8 if not retry_after else max(float(retry_after), 2)
-                print(f"429 détecté → attente {wait} secondes...")
+                retry_after = r.headers.get("Retry-After", "8")
+                try:
+                    wait = max(float(retry_after), 2)
+                except:
+                    wait = 8
+                print(f"429 → attente {wait} secondes...")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
@@ -40,13 +42,14 @@ def shopify_request(method, url, **kwargs):
             attempt += 1
             if attempt >= 8:
                 raise
-            print(f"Erreur réseau (tentative {attempt}/8) → attente {2**attempt} sec : {e}")
-            time.sleep(2 ** attempt)
+            wait = 2 ** attempt
+            print(f"Erreur réseau (tentative {attempt}/8) → attente {wait}s : {e}")
+            time.sleep(wait)
 
 # ====================== NOVA ENGEL ======================
 def get_novaengel_token():
-    url = "https://drop.novaengel.com/api/login"
-    r = session.post(url, json={"user": NOVA_USER, "password": NOVA_PASS}, timeout=30)
+    r = session.post("https://drop.novaengel.com/api/login",
+                     json={"user": NOVA_USER, "password": NOVA_PASS}, timeout=30)
     r.raise_for_status()
     token = r.json().get("Token") or r.json().get("token")
     if not token:
@@ -55,8 +58,7 @@ def get_novaengel_token():
 
 def get_novaengel_stock():
     token = get_novaengel_token()
-    url = f"https://drop.novaengel.com/api/stock/update/{token}"
-    r = session.get(url, timeout=60)
+    r = session.get(f"https://drop.novaengel.com/api/stock/update/{token}", timeout=60)
     r.raise_for_status()
     return r.json()
 
@@ -68,10 +70,10 @@ def get_all_shopify_products():
 
     while url:
         r = shopify_request("GET", url, headers=headers)
-        data = r.json()
-        products.extend(data["products"])
+        products.extend(r.json()["products"])
         url = None
-        for part in r.headers.get("Link", "").split(","):
+        link = r.headers.get("Link", "")
+        for part in link.split(","):
             if 'rel="next"' in part:
                 url = part.split(";")[0].strip("<> ")
                 break
@@ -114,12 +116,12 @@ def sync_all_products():
 
 # ====================== SCHÉDULER ======================
 scheduler = BackgroundScheduler(timezone="Europe/Paris")
-scheduler.add_job(func=sync_all_products, trigger="interval", minutes=60)
+scheduler.add_job(func=sync_all_products, trigger="interval", minutes=60, id="sync_job")
 scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
+atexit.register(lambda: scheduler.shutdown(wait=False))
 
 # ====================== ROUTES ======================
-@app.route("/sync", methods=["GET"])
+@app.route("/sync")
 def manual_sync():
     if request.args.get("key") != SECRET_KEY:
         return jsonify({"error": "bad key"}), 403
