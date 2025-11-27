@@ -70,7 +70,13 @@ def sync_all_products():
                     if new_stock != old_stock:
                         update_shopify_stock(variant["inventory_item_id"], location_id, new_stock)
                         modified.append(f"{product['title']} | SKU {sku}: {old_stock} → {new_stock}")
-        print(f"✅ Synchronisation terminée, produits modifiés:\n" + "\n".join(modified) if modified else "Aucun produit modifié")
+
+        print("✅ Synchronisation terminée")
+        if modified:
+            print("\n".join(modified))
+        else:
+            print("Aucun produit modifié")
+
     except Exception as e:
         print(f"❌ Erreur: {e}")
 
