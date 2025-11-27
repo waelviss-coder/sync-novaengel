@@ -1,15 +1,20 @@
 # sync.py
 import requests
 import os
+import time
 
 SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE")
 SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN")
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
+# ================= NOVA ENGEL =================
 def get_novaengel_token():
-    r = requests.post("https://drop.novaengel.com/api/login",
-                      json={"user": NOVA_USER, "password": NOVA_PASS})
+    r = requests.post(
+        "https://drop.novaengel.com/api/login",
+        json={"user": NOVA_USER, "password": NOVA_PASS},
+        timeout=30
+    )
     r.raise_for_status()
     token = r.json().get("Token") or r.json().get("token")
     if not token:
@@ -18,21 +23,43 @@ def get_novaengel_token():
 
 def get_novaengel_stock():
     token = get_novaengel_token()
-    r = requests.get(f"https://drop.novaengel.com/api/stock/update/{token}")
+    r = requests.get(f"https://drop.novaengel.com/api/stock/update/{token}", timeout=60)
     r.raise_for_status()
     return r.json()
+
+# ================= SHOPIFY =================
+def shopify_request(method, url, **kwargs):
+    """Gestion des 429 et des erreurs réseau."""
+    attempt = 0
+    while True:
+        try:
+            r = requests.request(method, url, **kwargs, timeout=30)
+            if r.status_code == 429:
+                retry_after = r.headers.get("Retry-After", "5")
+                wait = max(float(retry_after), 5)
+                print(f"⚠️ 429 Too Many Requests → attente {wait}s...")
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r
+        except requests.exceptions.RequestException as e:
+            attempt += 1
+            if attempt > 5:
+                raise
+            wait = 2 ** attempt
+            print(f"⚠️ Erreur réseau (tentative {attempt}/5) → attente {wait}s: {e}")
+            time.sleep(wait)
 
 def get_all_shopify_products():
     products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
     while url:
-        r = requests.get(url, headers=headers)
-        r.raise_for_status()
+        r = shopify_request("GET", url, headers=headers)
         data = r.json()
-        products.extend(data["products"])
-        link_header = r.headers.get("Link", "")
+        products.extend(data.get("products", []))
         url = None
+        link_header = r.headers.get("Link", "")
         for part in link_header.split(","):
             if 'rel="next"' in part:
                 url = part.split(";")[0].strip("<> ")
@@ -41,18 +68,20 @@ def get_all_shopify_products():
 def get_shopify_location_id():
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/locations.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
-    r = requests.get(url, headers=headers)
-    r.raise_for_status()
-    return r.json()["locations"][0]["id"]
+    r = shopify_request("GET", url, headers=headers)
+    locations = r.json().get("locations", [])
+    if not locations:
+        raise Exception("Aucune location trouvée sur Shopify")
+    return locations[0]["id"]
 
 def update_shopify_stock(inventory_item_id, location_id, stock):
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/inventory_levels/set.json"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN, "Content-Type": "application/json"}
     payload = {"location_id": location_id, "inventory_item_id": inventory_item_id, "available": stock}
-    r = requests.post(url, json=payload, headers=headers)
-    r.raise_for_status()
-    return True
+    shopify_request("POST", url, json=payload, headers=headers)
+    time.sleep(0.5)  # Pause pour éviter le throttling
 
+# ================= SYNC =================
 def sync_all_products():
     modified = []
     try:
@@ -62,7 +91,7 @@ def sync_all_products():
         nova_map = {str(i.get("Id","")).strip(): i.get("Stock",0) for i in nova_stock if i.get("Id")}
 
         for product in shopify_products:
-            for variant in product["variants"]:
+            for variant in product.get("variants", []):
                 sku = variant["sku"].strip().replace("'", "")
                 if sku in nova_map:
                     old_stock = variant["inventory_quantity"]
