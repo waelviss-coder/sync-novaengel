@@ -7,6 +7,8 @@ import atexit
 import signal
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
+from orders import send_order_to_novaengel
+
 
 # ====================== CONFIG ======================
 SHOPIFY_STORE = "plureals.myshopify.com"
@@ -131,6 +133,15 @@ def manual_sync():
 @app.route("/")
 def home():
     return "<h3>Sync NovaEngel → Shopify – AUTOMATIQUE TOUTES LES HEURES</h3>"
+@app.route("/shopify/order-created", methods=["POST"])
+def shopify_order_created():
+    try:
+        order = request.get_json(force=True)
+        send_order_to_novaengel(order)
+        return jsonify({"status": "order sent to NovaEngel"}), 200
+    except Exception as e:
+        logging.exception("Erreur webhook commande")
+        return jsonify({"error": str(e)}), 500
 
 # ====================== START ======================
 if __name__ == "__main__":
