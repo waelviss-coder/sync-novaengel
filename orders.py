@@ -46,6 +46,6 @@ def send_order_to_novaengel(order):
     r = requests.post(
         f"https://drop.novaengel.com/api/order/create/{token}",
         json=payload,
-        timeout=30
+        timeout=60
     )
     r.raise_for_status()
