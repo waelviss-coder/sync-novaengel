@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Shopify → NovaEngel (EAN only) actif"
+    return "✅ Shopify → NovaEngel (EAN ONLY) actif"
 
 @app.route("/health")
 def health():
@@ -20,7 +20,7 @@ def health():
 
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_webhook():
-    logger.info("🎯 Webhook Shopify reçu")
+    logger.info("🎯 WEBHOOK SHOPIFY REÇU")
 
     try:
         order = request.get_json(force=True)

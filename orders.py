@@ -19,15 +19,18 @@ def get_novaengel_token():
             timeout=10
         )
         if r.status_code == 200:
-            return r.json().get("Token")
+            token = r.json().get("Token")
+            if token:
+                logger.info("🔑 Token NovaEngel obtenu")
+                return token
     except Exception as e:
-        logger.error(f"❌ Token error: {e}")
+        logger.error(f"❌ Erreur token: {e}")
     return None
 
 # ================= EAN → PRODUCT ID (STOCK) =================
 def get_product_id_by_ean(ean, token):
     ean = str(ean).strip().replace("'", "")
-    logger.info(f"🔍 Recherche EAN NovaEngel: {ean}")
+    logger.info(f"🔍 Recherche EAN dans le STOCK: {ean}")
 
     url = f"https://drop.novaengel.com/api/stocks/{token}"
     r = requests.get(url, timeout=30)
@@ -36,18 +39,21 @@ def get_product_id_by_ean(ean, token):
         logger.error(f"❌ Stock API error {r.status_code}")
         return None
 
-    for item in r.json():
+    stocks = r.json()
+    logger.info(f"📦 {len(stocks)} produits stock analysés")
+
+    for item in stocks:
         if str(item.get("EAN")) == ean:
             product_id = item.get("ProductId")
             logger.info(f"✅ EAN trouvé → ProductId {product_id}")
             return product_id
 
-    logger.error(f"❌ EAN non trouvé dans le stock: {ean}")
+    logger.error(f"❌ EAN {ean} NON TROUVÉ dans /api/stocks")
     return None
 
 # ================= SEND ORDER =================
 def send_order_to_novaengel(order):
-    logger.info("🚀 Envoi commande NovaEngel")
+    logger.info("🚀 ENVOI COMMANDE NOVAENGEL")
 
     token = get_novaengel_token()
     if not token:
