@@ -15,13 +15,113 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# =========================== TOKEN NOVA ENGEL ===========================
+# =========================== TOKEN ===========================
 def get_novaengel_token():
-    logger.info("🔑 Tentative d'obtenir le token NovaEngel...")
     try:
         r = requests.post(
             "https://drop.novaengel.com/api/login",
             json={"user": NOVA_USER, "password": NOVA_PASS},
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=10
+        )
+        if r.status_code == 200:
+            data = r.json()
+            token = data.get("Token") or data.get("token")
+            if token:
+                return token
+        return None
+    except:
+        return None
+
+# =========================== ENVOI COMMANDE ===========================
+def send_order_to_novaengel(order):
+    """ENVOIE DIRECTEMENT la commande à NovaEngel"""
+    logger.info("=== ENVOI COMMANDE NOVAENGEL ===")
+    
+    try:
+        # 1. Token
+        token = get_novaengel_token()
+        if not token:
+            logger.error("❌ Échec: pas de token")
+            return False
+        
+        # 2. FIXEZ ICI VOS IDs PRODUIT - C'EST LA CLÉ !
+        # Vous DEVEZ mettre les vrais IDs NovaEngel pour chaque SKU
+        # Exemple: SKU "8436097094189" → ID NovaEngel "12345"
+        SKU_TO_ID = {
+            # ==== À VOUS DE REMPLIR ====
+            # Format: "VOTRE_SKU": ID_NOVAENGEL,
+            "8436097094189": 87061,  # REMPLACEZ 87061 par le VRAI ID
+            "8436097094190": 2977,   # REMPLACEZ 2977 par le VRAI ID
+            # ===========================
+        }
+        
+        # 3. Préparer les lignes de commande
+        lines = []
+        for item in order.get("line_items", []):
+            sku = str(item.get("sku", "")).strip()
+            qty = item.get("quantity", 1)
+            
+            if not sku:
+                continue
+                
+            # Trouver l'ID correspondant
+            product_id = SKU_TO_ID.get(sku)
+            
+            if product_id:
+                lines.append({
+                    "productId": product_id,  # ← C'EST LE CHAMP IMPORTANT
+                    "units": qty
+                })
+                logger.info(f"✅ SKU {sku} → ID {product_id} (qty: {qty})")
+            else:
+                # Si SKU non trouvé, ESSAYEZ avec un ID existant pour tester
+                logger.warning(f"⚠ SKU non mappé: {sku} - ESSAI avec ID 87061")
+                lines.append({
+                    "productId": 87061,  # ID de test
+                    "units": qty
+                })
+        
+        if not lines:
+            logger.error("❌ Aucun produit dans la commande")
+            return False
+        
+        # 4. Adresse
+        shipping = order.get("shipping_address", {})
+        
+        # 5. Numéro de commande (DOIT être numérique)
+        order_number = order.get("name", "").replace("#", "")
+        if not order_number.isdigit():
+            # Générer un numéro numérique
+            order_number = str(int(time.time()))[-9:]
+            logger.info(f"📝 Numéro généré: {order_number}")
+        
+        # 6. PAYLOAD FINAL - FORMAT EXACT NovaEngel
+        payload = [{
+            "orderNumber": order_number[:15],  # Max 15 caractères
+            "valoration": 0.0,
+            "carrierNotes": "Commande Shopify",
+            "lines": lines,  # ← Lignes produits
+            "name": shipping.get("first_name", "Client"),
+            "secondName": shipping.get("last_name", ""),
+            "telephone": shipping.get("phone", "000000000"),
+            "mobile": shipping.get("phone", "000000000"),
+            "street": shipping.get("address1", ""),
+            "city": shipping.get("city", ""),
+            "county": shipping.get("province", ""),
+            "postalCode": shipping.get("zip", "00000"),
+            "country": shipping.get("country_code") or shipping.get("country", "FR")
+        }]
+        
+        logger.info(f"📦 Payload prêt: {json.dumps(payload, indent=2)}")
+        
+        # 7. ENVOYER À NOVAENGEL
+        url = f"https://drop.novaengel.com/api/orders/sendv2/{token}"
+        logger.info(f"🚀 Envoi à: {url}")
+        
+        response = requests.post(
+            url,
+            json=payload,
             headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json"
@@ -29,216 +129,23 @@ def get_novaengel_token():
             timeout=30
         )
         
-        logger.info(f"📥 Login status: {r.status_code}")
+        # 8. ANALYSER LA RÉPONSE
+        logger.info(f"📥 Réponse HTTP: {response.status_code}")
+        logger.info(f"📥 Contenu: {response.text}")
         
-        if r.status_code != 200:
-            logger.error(f"❌ Erreur login: {r.text}")
-            return None
-            
-        data = r.json()
-        token = data.get("Token") or data.get("token")
-        
-        if not token:
-            logger.error("❌ Token non trouvé")
-            return None
-            
-        logger.info(f"✅ Token reçu: {token[:8]}...")
-        return token
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Erreur réseau login: {e}")
-        return None
-    except Exception as e:
-        logger.exception(f"❌ Exception login: {e}")
-        return None
-
-# =========================== STOCK ===========================
-def get_novaengel_stock():
-    logger.info("🔍 Récupération stock NovaEngel...")
-    token = get_novaengel_token()
-    if not token:
-        logger.error("❌ Pas de token pour stock")
-        return []
-    
-    try:
-        r = requests.get(
-            f"https://drop.novaengel.com/api/stock/update/{token}",
-            headers={"Accept": "application/json"},
-            timeout=60
-        )
-        
-        if r.status_code == 200:
-            return r.json()
-        else:
-            logger.error(f"❌ Erreur stock: {r.status_code} - {r.text}")
-            return []
-    except Exception as e:
-        logger.exception(f"❌ Exception stock: {e}")
-        return []
-
-# =========================== RECHERCHE PRODUIT PAR EAN ===========================
-def find_product_id_by_ean(ean, token):
-    """Recherche l'ID produit à partir de l'EAN"""
-    if not ean or not token:
-        return None
-        
-    try:
-        logger.info(f"🔍 Recherche ID pour EAN: {ean}")
-        
-        # Télécharger la liste des produits
-        r = requests.get(
-            f"https://drop.novaengel.com/api/products/availables/{token}/en",
-            headers={"Accept": "application/json"},
-            timeout=60
-        )
-        
-        if r.status_code != 200:
-            logger.error(f"❌ Erreur produits: {r.status_code}")
-            return None
-            
-        products = r.json()
-        
-        # Rechercher par EAN
-        for product in products:
-            if "EANS" in product and ean in product["EANS"]:
-                logger.info(f"✅ Produit trouvé: EAN {ean} → ID {product['Id']}")
-                return product["Id"]
-        
-        logger.warning(f"⚠ Produit non trouvé pour EAN: {ean}")
-        return None
-        
-    except Exception as e:
-        logger.exception(f"❌ Erreur recherche produit EAN {ean}: {e}")
-        return None
-
-# =========================== ENVOI DE COMMANDE CORRIGÉ ===========================
-def send_order_to_novaengel(order):
-    logger.info("=== DÉBUT ENVOI COMMANDE NOVAENGEL ===")
-    logger.info(f"📦 Commande: {order.get('name', 'N/A')}")
-    
-    try:
-        # 1. Obtenir le token
-        token = get_novaengel_token()
-        if not token:
-            logger.error("❌ Impossible d'obtenir le token")
-            return
-        
-        # 2. Préparer les lignes de commande
-        order_lines = []
-        line_items = order.get("line_items", [])
-        logger.info(f"📦 Nombre d'items: {len(line_items)}")
-        
-        for item in line_items:
-            sku = item.get("sku", "").strip()
-            if not sku:
-                logger.warning("⚠ Item sans SKU ignoré")
-                continue
-                
-            # Rechercher l'ID produit à partir du SKU (EAN)
-            product_id = find_product_id_by_ean(sku, token)
-            if product_id:
-                order_lines.append({
-                    "productId": product_id,
-                    "units": item.get("quantity", 1)
-                })
-                logger.info(f"✅ Item ajouté: {sku} → ID {product_id}, Qty: {item.get('quantity', 1)}")
-            else:
-                logger.warning(f"⚠ Produit non trouvé pour EAN: {sku}")
-        
-        if not order_lines:
-            logger.error("❌ Aucun produit valide trouvé dans la commande")
-            return
-        
-        # 3. Récupérer l'adresse de livraison
-        shipping = order.get("shipping_address", {})
-        
-        # 4. Construire le payload selon OrderInModel
-        order_number = order.get("name", "").replace("#", "").replace("TEST", "")
-        # S'assurer que c'est numérique (requis par NovaEngel)
-        if not order_number.isdigit():
-            order_number = str(int(time.time()))[-10:]  # Générer un numéro numérique
-            logger.info(f"⚠ Numéro de commande modifié: {order.get('name', '')} → {order_number}")
-        
-        payload = [{
-            "orderNumber": order_number,
-            "valoration": 0.0,
-            "carrierNotes": "Commande depuis Shopify",
-            "lines": order_lines,
-            "name": shipping.get("first_name", ""),
-            "secondName": shipping.get("last_name", ""),
-            "telephone": shipping.get("phone", "") or "0000000000",
-            "mobile": shipping.get("phone", "") or "0000000000",
-            "street": shipping.get("address1", ""),
-            "city": shipping.get("city", ""),
-            "county": shipping.get("province", ""),
-            "postalCode": shipping.get("zip", ""),
-            "country": shipping.get("country_code") or shipping.get("country", "ES")
-        }]
-        
-        logger.info(f"📤 Payload NovaEngel: {json.dumps(payload, indent=2)}")
-        
-        # 5. Envoyer la commande avec retry
-        url = f"https://drop.novaengel.com/api/orders/sendv2/{token}"
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        
-        for attempt in range(3):
-            logger.info(f"📤 Tentative {attempt+1}/3: {url}")
-            
+        if response.status_code == 200:
             try:
-                r = requests.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                    timeout=60
-                )
-                
-                logger.info(f"📥 Réponse NovaEngel (status {r.status_code}): {r.text[:500]}")
-                
-                if r.status_code == 200:
-                    try:
-                        response_data = r.json()
-                        logger.info(f"📥 Réponse JSON: {response_data}")
-                        
-                        if isinstance(response_data, list):
-                            for order_response in response_data:
-                                if "Errors" in order_response and order_response["Errors"]:
-                                    logger.error(f"❌ Erreurs NovaEngel: {order_response['Errors']}")
-                                else:
-                                    logger.info(f"✅ Commande envoyée avec succès! BookingCode: {order_response.get('BookingCode', 'N/A')}")
-                                    logger.info(f"✅ Message: {order_response.get('Message', 'N/A')}")
-                        else:
-                            logger.info(f"✅ Réponse: {response_data}")
-                    except:
-                        logger.info(f"✅ Réponse texte: {r.text}")
-                    
-                    logger.info("=== COMMANDE ENVOYÉE AVEC SUCCÈS ===")
-                    return
-                else:
-                    logger.error(f"❌ Erreur HTTP {r.status_code}: {r.text}")
-                    if attempt < 2:
-                        time.sleep(2)
-                        continue
-                    
-            except requests.exceptions.Timeout:
-                logger.warning(f"⚠ Timeout, tentative {attempt+1}/3")
-                if attempt < 2:
-                    time.sleep(5)
-                    continue
-                    
-            except requests.exceptions.RequestException as e:
-                logger.error(f"❌ Erreur réseau (tentative {attempt+1}): {e}")
-                if attempt < 2:
-                    time.sleep(2)
-                    continue
-                    
-            except Exception as e:
-                logger.exception(f"❌ Erreur inattendue: {e}")
-                break
-        
-        logger.error("❌ Échec après 3 tentatives")
-        
+                result = response.json()
+                logger.info(f"✅ SUCCÈS! Réponse: {json.dumps(result, indent=2)}")
+                return True
+            except:
+                logger.info(f"✅ SUCCÈS (texte): {response.text}")
+                return True
+        else:
+            logger.error(f"❌ ERREUR NovaEngel: {response.status_code}")
+            logger.error(f"❌ Détails: {response.text}")
+            return False
+            
     except Exception as e:
-        logger.exception(f"❌ Échec complet envoi commande: {e}")
+        logger.error(f"❌ Exception: {str(e)}")
+        return False
