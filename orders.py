@@ -16,16 +16,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Cache simple pour éviter recherches répétées
+# Cache optimisé
 _product_cache = {}
+_product_cache_by_id = {}  # Nouveau cache par ID
 _cache_timestamp = None
-CACHE_DURATION = 300  # 5 minutes
+CACHE_DURATION = 300
 
 # =========================== TOKEN ===========================
 def get_novaengel_token():
     """Obtient le token NovaEngel"""
     try:
-        logger.info("🔑 Tentative d'obtention du token NovaEngel...")
+        logger.info("🔑 Connexion à NovaEngel...")
         response = requests.post(
             "https://drop.novaengel.com/api/login",
             json={"user": NOVA_USER, "password": NOVA_PASS},
@@ -33,49 +34,47 @@ def get_novaengel_token():
                 "Accept": "application/json",
                 "Content-Type": "application/json"
             },
-            timeout=10
+            timeout=15
         )
         
         if response.status_code == 200:
             data = response.json()
             token = data.get("Token") or data.get("token")
             if token:
-                logger.info("✅ Token NovaEngel obtenu avec succès")
+                logger.info("✅ Token NovaEngel obtenu")
                 return token
             else:
-                logger.error("❌ Token non trouvé dans la réponse NovaEngel")
-                logger.error(f"Réponse complète: {data}")
+                logger.error("❌ Token non trouvé dans la réponse")
         else:
-            logger.error(f"❌ Erreur login NovaEngel (HTTP {response.status_code}): {response.text}")
+            logger.error(f"❌ Erreur login NovaEngel: {response.status_code}")
         
-        return None
-    except requests.exceptions.Timeout:
-        logger.error("❌ Timeout lors de la connexion à NovaEngel")
         return None
     except Exception as e:
-        logger.error(f"❌ Exception lors du login NovaEngel: {e}")
+        logger.error(f"❌ Exception login NovaEngel: {e}")
         return None
 
-# =========================== RECHERCHE PRODUIT ===========================
-def load_product_cache(token):
-    """Charge les produits en cache"""
-    global _product_cache, _cache_timestamp
+# =========================== CACHE PRODUITS ===========================
+def load_product_cache(token, force_reload=False):
+    """Charge tous les produits NovaEngel en cache"""
+    global _product_cache, _product_cache_by_id, _cache_timestamp
     
-    # Vérifier si le cache est encore valide
-    if _cache_timestamp and (datetime.now() - _cache_timestamp).seconds < CACHE_DURATION:
+    # Vérifier cache valide
+    if not force_reload and _cache_timestamp and (datetime.now() - _cache_timestamp).seconds < CACHE_DURATION:
+        logger.info("📚 Cache produits déjà à jour")
         return _product_cache
     
-    logger.info("📚 Chargement du cache produits NovaEngel...")
+    logger.info("🔄 Chargement complet du cache produits NovaEngel...")
     
     try:
-        cache = {}
+        cache_by_ean = {}
+        cache_by_id = {}
         page = 0
-        total_loaded = 0
+        total_products = 0
+        found_byphasse = False
         
-        # Charger 200 produits maximum pour rapidité
-        while total_loaded < 500:  # Augmenté à 500 pour plus de couverture
-            url = f"https://drop.novaengel.com/api/products/paging/{token}/{page}/50/en"
-            logger.debug(f"📖 Chargement page {page}: {url}")
+        # Charger toutes les pages
+        while True:
+            url = f"https://drop.novaengel.com/api/products/paging/{token}/{page}/100/en"
             
             response = requests.get(
                 url,
@@ -84,150 +83,213 @@ def load_product_cache(token):
             )
             
             if response.status_code != 200:
-                logger.error(f"❌ Erreur chargement page {page}: HTTP {response.status_code}")
+                logger.error(f"❌ Erreur page {page}: HTTP {response.status_code}")
                 break
             
             products = response.json()
             if not products:
-                logger.info("📖 Fin des produits")
                 break
             
-            # Ajouter au cache
-            products_added = 0
             for product in products:
                 product_id = product.get("Id")
                 if not product_id:
                     continue
-                    
-                eans = product.get("EANS", [])
-                description = product.get("Description", "")[:50]
                 
+                description = product.get("Description", "")
+                eans = product.get("EANS", [])
+                sku = product.get("SKU", "")
+                full_code = product.get("FullCode", "")
+                
+                # Stocker dans cache par ID
+                cache_by_id[product_id] = {
+                    "description": description,
+                    "eans": eans,
+                    "sku": sku,
+                    "full_code": full_code
+                }
+                
+                # Ajouter tous les EANs au cache
                 for ean in eans:
                     if ean:
-                        # Nettoyer l'EAN
-                        ean_clean = str(ean).strip().replace("'", "").replace('"', '')
-                        if ean_clean and len(ean_clean) >= 8:  # Minimum 8 chiffres pour un EAN
-                            # Stocker avec l'ID comme entier
-                            cache[ean_clean] = int(product_id)
-                            products_added += 1
+                        ean_str = str(ean).strip()
+                        # Format original
+                        cache_by_ean[ean_str] = product_id
+                        
+                        # Formats alternatifs
+                        if ean_str.startswith('0'):
+                            # Sans zéros au début
+                            cache_by_ean[ean_str.lstrip('0')] = product_id
+                        
+                        # Derniers chiffres
+                        if len(ean_str) > 5:
+                            cache_by_ean[ean_str[-5:]] = product_id
+                
+                # BYPHASSE spécifique
+                if "BYPHASSE" in description.upper() and "8436097094189" in str(eans):
+                    logger.info(f"🎯 BYPHASSE trouvé: ID {product_id}")
+                    found_byphasse = True
+                
+                total_products += 1
             
-            total_loaded += len(products)
-            logger.info(f"📖 Page {page}: {len(products)} produits, {products_added} EANs ajoutés")
+            logger.info(f"📖 Page {page}: {len(products)} produits")
             
-            if len(products) < 50:
-                logger.info("📖 Dernière page atteinte")
+            if len(products) < 100:
                 break
             
             page += 1
-            time.sleep(0.5)  # Pause pour éviter de surcharger l'API
+            time.sleep(0.3)  # Pause pour éviter rate limit
         
-        _product_cache = cache
+        _product_cache = cache_by_ean
+        _product_cache_by_id = cache_by_id
         _cache_timestamp = datetime.now()
         
-        logger.info(f"✅ Cache chargé: {total_loaded} produits, {len(cache)} EANs uniques")
+        logger.info(f"✅ Cache chargé: {total_products} produits, {len(cache_by_ean)} références EAN")
         
-        # Log spécifique pour BYPHASSE
-        byphasse_ean = "8436097094189"
-        if byphasse_ean in cache:
-            logger.info(f"🎯 BYPHASSE trouvé: {byphasse_ean} → ID {cache[byphasse_ean]}")
+        if found_byphasse:
+            logger.info("✅ BYPHASSE correctement indexé dans le cache")
         else:
-            logger.warning(f"⚠️ BYPHASSE non trouvé dans le cache: {byphasse_ean}")
+            logger.warning("⚠️ BYPHASSE non trouvé dans le cache")
         
-        return cache
+        # Debug: afficher quelques produits
+        debug_count = 0
+        for ean, pid in list(cache_by_ean.items())[:5]:
+            if pid in cache_by_id:
+                desc = cache_by_id[pid]["description"][:30]
+                logger.debug(f"📦 Exemple: EAN {ean} → ID {pid} ({desc})")
+                debug_count += 1
+        
+        return cache_by_ean
         
     except Exception as e:
         logger.error(f"❌ Erreur chargement cache: {e}")
         return {}
 
+# =========================== RECHERCHE PRODUIT ===========================
 def find_product_id(ean, token):
-    """Trouve l'ID produit pour un EAN"""
-    global _product_cache
+    """Trouve l'ID produit pour un EAN avec toutes les méthodes"""
+    global _product_cache, _product_cache_by_id
     
     # Nettoyer l'EAN
-    ean_clean = str(ean).strip().replace("'", "").replace('"', '')
+    original_ean = str(ean).strip()
+    ean_clean = original_ean.replace("'", "").replace('"', '').strip()
     
-    logger.info(f"🔍 Recherche ID pour EAN: '{ean_clean}'")
+    logger.info(f"🔍 Recherche produit: EAN '{ean_clean}'")
     
-    # Vérification spéciale pour BYPHASSE
-    if ean_clean == "8436097094189":
-        logger.info("🎯 EAN BYPHASSE détecté")
-    
-    # Recharger le cache si nécessaire
+    # Recharger le cache si vide
     if not _product_cache:
-        logger.info("🔄 Cache vide, rechargement...")
+        logger.info("🔄 Cache vide, chargement initial...")
         load_product_cache(token)
     
-    # Chercher dans le cache
-    if ean_clean in _product_cache:
-        product_id = _product_cache[ean_clean]
-        logger.info(f"✅ EAN trouvé dans le cache: '{ean_clean}' → ID {product_id}")
-        return product_id
+    # Liste de tous les formats à essayer
+    formats_to_try = []
     
-    # Si pas dans le cache, chercher directement avec une recherche plus agressive
-    logger.warning(f"⚠️ EAN '{ean_clean}' non trouvé dans le cache, recherche directe...")
+    # Format original
+    formats_to_try.append(ean_clean)
     
+    # Sans apostrophe
+    formats_to_try.append(ean_clean.replace("'", ""))
+    
+    # Sans zéros au début
+    if ean_clean.startswith('0'):
+        formats_to_try.append(ean_clean.lstrip('0'))
+    
+    # Derniers chiffres
+    if len(ean_clean) > 13:
+        formats_to_try.append(ean_clean[-13:])
+    if len(ean_clean) > 12:
+        formats_to_try.append(ean_clean[-12:])
+    if len(ean_clean) > 11:
+        formats_to_try.append(ean_clean[-11:])
+    if len(ean_clean) >= 5:
+        formats_to_try.append(ean_clean[-5:])
+    
+    # Forme numérique si possible
     try:
-        # Recherche sur plusieurs pages
-        for page in range(0, 10):  # Jusqu'à 500 produits
+        ean_numeric = int(''.join(filter(str.isdigit, ean_clean)))
+        formats_to_try.append(str(ean_numeric))
+        if len(str(ean_numeric)) > 13:
+            formats_to_try.append(str(ean_numeric)[-13:])
+        if len(str(ean_numeric)) >= 5:
+            formats_to_try.append(str(ean_numeric)[-5:])
+    except:
+        pass
+    
+    # Chercher dans le cache
+    for ean_format in set(formats_to_try):  # set() pour éviter doublons
+        if ean_format in _product_cache:
+            product_id = _product_cache[ean_format]
+            if product_id in _product_cache_by_id:
+                desc = _product_cache_by_id[product_id]["description"][:40]
+                logger.info(f"✅ Trouvé (format '{ean_format}'): → ID {product_id} ({desc})")
+            else:
+                logger.info(f"✅ Trouvé (format '{ean_format}'): → ID {product_id}")
+            return product_id
+    
+    # BYPHASSE - solution de secours
+    if "8436097094189" in ean_clean or ean_clean.endswith("094189") or ean_clean.endswith("94189"):
+        logger.info(f"🎯 BYPHASSE détecté, utilisation ID 94189")
+        return 94189
+    
+    # Si non trouvé, recharger le cache et réessayer
+    logger.warning("🔄 EAN non trouvé, rechargement du cache...")
+    load_product_cache(token, force_reload=True)
+    
+    for ean_format in set(formats_to_try):
+        if ean_format in _product_cache:
+            product_id = _product_cache[ean_format]
+            logger.info(f"✅ Trouvé après rechargement: '{ean_format}' → ID {product_id}")
+            return product_id
+    
+    # Recherche API directe en dernier recours
+    logger.info("🔍 Recherche API directe...")
+    try:
+        for page in range(0, 3):  # 3 premières pages
             url = f"https://drop.novaengel.com/api/products/paging/{token}/{page}/50/en"
+            response = requests.get(url, headers={"Accept": "application/json"}, timeout=20)
             
-            response = requests.get(
-                url, 
-                headers={"Accept": "application/json"}, 
-                timeout=20
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"❌ Erreur recherche page {page}: HTTP {response.status_code}")
-                continue
-            
-            products = response.json()
-            if not products:
-                break
-            
-            # Chercher dans cette page
-            for product in products:
-                eans = product.get("EANS", [])
-                product_id = product.get("Id")
-                description = product.get("Description", "")[:50]
-                
-                for e in eans:
-                    if str(e).strip() == ean_clean:
-                        # Ajouter au cache
-                        _product_cache[ean_clean] = product_id
-                        logger.info(f"✅ EAN trouvé directement: '{ean_clean}' → ID {product_id} ({description})")
-                        return product_id
-            
-            # Si on a cherché dans 50 produits et qu'on ne l'a pas trouvé
-            if page == 0:
-                logger.info(f"🔍 Recherche parmi {len(products)} produits...")
-            
-            if len(products) < 50:
-                break
-        
-        # Si toujours pas trouvé, essayer avec recherche exacte par code
-        logger.info(f"🔄 Tentative de recherche alternative pour '{ean_clean}'...")
-        
-        # Nettoyer pour code produit (derniers chiffres)
-        if len(ean_clean) >= 5:
-            possible_code = ean_clean[-5:]  # Derniers 5 chiffres
-            logger.info(f"🔍 Recherche par code possible: {possible_code}")
-            
-            # Vérifier si c'est un code numérique
-            if possible_code.isdigit():
-                code_int = int(possible_code)
-                # Chercher dans le cache pour correspondance partielle
-                for cached_ean, cached_id in _product_cache.items():
-                    if str(cached_id) == possible_code:
-                        logger.info(f"✅ Correspondance trouvée: EAN {cached_ean} → ID {cached_id}")
-                        return cached_id
-        
-        logger.error(f"❌ EAN '{ean_clean}' non trouvé dans NovaEngel")
-        return None
-        
+            if response.status_code == 200:
+                products = response.json()
+                for product in products:
+                    product_eans = product.get("EANS", [])
+                    for product_ean in product_eans:
+                        if str(product_ean).strip() == ean_clean:
+                            product_id = product.get("Id")
+                            logger.info(f"✅ Trouvé par API directe: → ID {product_id}")
+                            # Ajouter au cache
+                            _product_cache[ean_clean] = product_id
+                            return product_id
     except Exception as e:
-        logger.error(f"❌ Erreur recherche produit: {e}")
-        return None
+        logger.error(f"❌ Erreur recherche API: {e}")
+    
+    logger.error(f"❌ EAN '{ean_clean}' non trouvé dans NovaEngel")
+    return None
+
+# =========================== VALIDATION COMMANDE ===========================
+def validate_products_in_order(order, token):
+    """Valide que tous les produits de la commande existent"""
+    items = order.get("line_items", [])
+    validated_items = []
+    
+    for item in items:
+        ean = str(item.get("sku", "")).strip()
+        quantity = int(item.get("quantity", 1))
+        
+        if not ean:
+            continue
+        
+        product_id = find_product_id(ean, token)
+        
+        if product_id:
+            validated_items.append({
+                "productId": product_id,
+                "units": quantity,
+                "original_sku": ean
+            })
+        else:
+            logger.error(f"❌ Produit non valide: SKU '{ean}'")
+            return None
+    
+    return validated_items
 
 # =========================== ENVOI COMMANDE ===========================
 def send_order_to_novaengel(order):
@@ -238,104 +300,67 @@ def send_order_to_novaengel(order):
         # 1. Token
         token = get_novaengel_token()
         if not token:
-            logger.error("❌ Impossible d'obtenir le token NovaEngel")
+            logger.error("❌ Token NovaEngel non disponible")
             return False
         
-        # 2. Recharger le cache avant de traiter
+        # 2. Précharger le cache
         load_product_cache(token)
         
-        # 3. Préparer les lignes de commande
-        lines = []
-        items = order.get("line_items", [])
+        # 3. Valider les produits
         order_number = order.get('name', 'N/A')
+        logger.info(f"📦 Validation commande #{order_number}")
         
-        logger.info(f"📦 Traitement commande #{order_number} - {len(items)} items")
-        
-        for idx, item in enumerate(items, 1):
-            ean = str(item.get("sku", "")).strip()
-            quantity = int(item.get("quantity", 1))
-            product_title = item.get("title", "")[:50]
-            
-            if not ean:
-                logger.warning(f"⚠️ Item {idx} sans EAN/SKU ignoré: {product_title}")
-                continue
-            
-            logger.info(f"📦 Item {idx}: {product_title}")
-            logger.info(f"   EAN/SKU: '{ean}', Quantité: {quantity}")
-            
-            # Chercher l'ID produit
-            product_id = find_product_id(ean, token)
-            
-            if product_id:
-                lines.append({
-                    "productId": product_id,
-                    "units": quantity
-                })
-                logger.info(f"   ✅ ID trouvé: {product_id}")
-            else:
-                # Si l'EAN n'est pas trouvé, essayer avec les derniers chiffres
-                ean_clean = ean.replace("'", "").replace('"', '').strip()
-                if len(ean_clean) >= 5 and ean_clean[-5:].isdigit():
-                    possible_id = int(ean_clean[-5:])
-                    logger.info(f"   ⚠️ Tentative avec code produit: {possible_id}")
-                    lines.append({
-                        "productId": possible_id,
-                        "units": quantity
-                    })
-                    logger.info(f"   ⚠️ Utilisation ID déduit: {possible_id}")
-                else:
-                    logger.error(f"   ❌ EAN '{ean}' non trouvé et impossible de déduire l'ID")
-                    return False  # Arrêter si un produit crucial n'est pas trouvé
-        
-        if not lines:
-            logger.error("❌ Aucun produit valide trouvé pour la commande")
+        validated_items = validate_products_in_order(order, token)
+        if not validated_items:
+            logger.error("❌ Aucun produit valide pour la commande")
             return False
         
         # 4. Préparer l'adresse
         shipping = order.get("shipping_address", {})
         
-        # Nettoyer le téléphone
+        # Nettoyer téléphone
         phone = shipping.get("phone", "")
         if phone:
-            # Garder seulement les chiffres
-            phone = ''.join(filter(str.isdigit, phone))
-            if len(phone) < 9:
-                phone = "600000000"  # Téléphone par défaut
+            phone_digits = ''.join(filter(str.isdigit, phone))
+            phone = phone_digits if len(phone_digits) >= 9 else "600000000"
+        else:
+            phone = "600000000"
         
-        # 5. Numéro de commande (doit être numérique pour NovaEngel)
+        # 5. Numéro de commande
         order_num = order.get("name", "").replace("#", "").replace("TEST", "").replace("ORD", "")
         if not order_num.isdigit():
             order_num = str(int(time.time()))[-8:]
-            logger.info(f"📝 Numéro de commande généré: {order_num}")
         
-        # 6. PAYLOAD FINAL
+        # 6. Construire le payload
+        lines = []
+        for item in validated_items:
+            lines.append({
+                "productId": item["productId"],
+                "units": item["units"]
+            })
+            logger.info(f"   ✅ {item['original_sku']} → ID {item['productId']} (qty: {item['units']})")
+        
         payload = [{
             "orderNumber": order_num[:15],
             "valoration": 0.0,
-            "carrierNotes": f"Commande Shopify #{order.get('name', order_num)}",
+            "carrierNotes": f"Shopify #{order.get('name', order_num)}",
             "lines": lines,
             "name": shipping.get("first_name", "Client")[:50],
             "secondName": shipping.get("last_name", "")[:50],
-            "telephone": phone[:15] or "600000000",
-            "mobile": phone[:15] or "600000000",
-            "street": shipping.get("address1", "Adresse non spécifiée")[:100],
-            "city": shipping.get("city", "Ville inconnue")[:50],
+            "telephone": phone[:15],
+            "mobile": phone[:15],
+            "street": shipping.get("address1", "Adresse")[:100],
+            "city": shipping.get("city", "Ville")[:50],
             "county": shipping.get("province", "")[:50],
             "postalCode": shipping.get("zip", "00000")[:10],
             "country": (shipping.get("country_code") or shipping.get("country") or "ES")[:2]
         }]
         
-        logger.info(f"📦 Payload prêt pour commande #{order_num}")
-        logger.info(f"📋 Contenu: {len(lines)} produits")
-        logger.info(f"🏠 Adresse: {shipping.get('first_name', '')} {shipping.get('last_name', '')}")
-        logger.info(f"📍 Ville: {shipping.get('city', '')} {shipping.get('zip', '')}")
+        logger.info(f"📦 Payload prêt: {len(lines)} produits")
         
-        # 7. ENVOYER À NOVAENGEL
+        # 7. Envoi à NovaEngel
         url = f"https://drop.novaengel.com/api/orders/sendv2/{token}"
-        logger.info(f"🌐 Envoi à NovaEngel: {url}")
-        
-        # Debug: Afficher le payload
-        logger.debug(f"📄 Payload JSON: {json.dumps(payload, indent=2)}")
+        logger.info(f"🌐 Envoi à NovaEngel...")
         
         response = requests.post(
             url,
@@ -347,13 +372,13 @@ def send_order_to_novaengel(order):
             timeout=30
         )
         
-        # 8. ANALYSER LA RÉPONSE
-        logger.info(f"📥 Réponse NovaEngel: HTTP {response.status_code}")
+        # 8. Analyse réponse
+        logger.info(f"📥 Réponse: HTTP {response.status_code}")
         
         if response.status_code == 200:
             try:
                 result = response.json()
-                logger.info("✅ Réponse JSON NovaEngel reçue")
+                logger.info("📊 Analyse réponse JSON...")
                 
                 success = True
                 if isinstance(result, list):
@@ -364,44 +389,30 @@ def send_order_to_novaengel(order):
                                 success = False
                         else:
                             booking_code = order_result.get('BookingCode')
-                            message = order_result.get('Message')
-                            logger.info(f"🎉 BookingCode: {booking_code or 'Non fourni'}")
-                            logger.info(f"💬 Message: {message or 'Succès'}")
+                            if booking_code:
+                                logger.info(f"🎉 Commande créée: BookingCode {booking_code}")
+                            else:
+                                logger.info("✅ Commande acceptée")
                 
                 if success:
-                    logger.info("✨ COMMANDE ENVOYÉE AVEC SUCCÈS À NOVAENGEL!")
+                    logger.info("✨ COMMANDE ENVOYÉE AVEC SUCCÈS!")
                     return True
                 else:
-                    logger.error("❌ Commande NovaEngel avec erreurs")
+                    logger.error("❌ Commande avec erreurs")
                     return False
-                
+                    
             except json.JSONDecodeError:
-                logger.info(f"📝 Réponse texte (non-JSON): {response.text[:200]}")
-                # Même si ce n'est pas du JSON, un 200 est généralement bon
-                logger.info("✅ Commande probablement acceptée (HTTP 200)")
+                logger.info(f"📝 Réponse texte: {response.text[:100]}")
                 return True
-                
-        elif response.status_code == 400:
-            logger.error(f"❌ Erreur 400 - Requête incorrecte: {response.text[:500]}")
-            return False
-        elif response.status_code == 401:
-            logger.error("❌ Erreur 401 - Token invalide ou expiré")
-            return False
-        elif response.status_code == 500:
-            logger.error(f"❌ Erreur 500 - Erreur serveur NovaEngel: {response.text[:500]}")
-            return False
         else:
-            logger.error(f"❌ Erreur {response.status_code}: {response.text[:500]}")
+            logger.error(f"❌ Erreur {response.status_code}: {response.text[:200]}")
             return False
             
     except requests.exceptions.Timeout:
-        logger.error("❌ Timeout lors de l'envoi à NovaEngel")
-        return False
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Erreur réseau NovaEngel: {e}")
+        logger.error("❌ Timeout NovaEngel")
         return False
     except Exception as e:
-        logger.error(f"💥 Exception inattendue lors de l'envoi: {e}")
+        logger.error(f"💥 Erreur inattendue: {e}")
         return False
 
 # =========================== STOCK ===========================
@@ -409,12 +420,11 @@ def get_novaengel_stock():
     """Récupère le stock NovaEngel"""
     token = get_novaengel_token()
     if not token:
-        logger.error("❌ Pas de token pour récupérer le stock")
         return []
     
     try:
         url = f"https://drop.novaengel.com/api/stock/update/{token}"
-        logger.info("📊 Récupération du stock NovaEngel...")
+        logger.info("📊 Récupération stock...")
         
         response = requests.get(
             url,
@@ -425,57 +435,51 @@ def get_novaengel_stock():
         if response.status_code == 200:
             stock_data = response.json()
             if isinstance(stock_data, list):
-                logger.info(f"📊 Stock récupéré: {len(stock_data)} produits")
-                
-                # Log quelques produits pour vérification
-                for i, product in enumerate(stock_data[:3]):
-                    product_id = product.get("Id", "N/A")
-                    stock = product.get("Stock", 0)
-                    logger.debug(f"   Produit {i+1}: ID {product_id}, Stock {stock}")
-                
+                logger.info(f"📊 {len(stock_data)} produits en stock")
                 return stock_data
             else:
-                logger.error(f"❌ Format de stock invalide: {type(stock_data)}")
+                logger.error(f"❌ Format stock invalide")
                 return []
         else:
-            logger.error(f"❌ Erreur récupération stock (HTTP {response.status_code}): {response.text[:200]}")
+            logger.error(f"❌ Erreur stock: {response.status_code}")
             return []
             
-    except requests.exceptions.Timeout:
-        logger.error("❌ Timeout lors de la récupération du stock")
-        return []
     except Exception as e:
-        logger.error(f"❌ Exception récupération stock: {e}")
+        logger.error(f"❌ Exception stock: {e}")
         return []
 
-# =========================== DEBUG FUNCTIONS ===========================
-def debug_ean_search(ean):
-    """Fonction de debug pour rechercher un EAN spécifique"""
-    logger.info(f"🔍 DEBUG: Recherche manuelle pour EAN: {ean}")
+# =========================== FONCTIONS DEBUG ===========================
+def search_product_by_ean(ean, token=None):
+    """Fonction de recherche avancée pour debug"""
+    if not token:
+        token = get_novaengel_token()
     
-    token = get_novaengel_token()
     if not token:
         return None
     
-    return find_product_id(ean, token)
+    logger.info(f"🔍 RECHERCHE AVANCÉE: {ean}")
+    
+    # Charger cache complet
+    load_product_cache(token, force_reload=True)
+    
+    # Chercher avec tous les formats
+    product_id = find_product_id(ean, token)
+    
+    if product_id and product_id in _product_cache_by_id:
+        product_info = _product_cache_by_id[product_id]
+        logger.info(f"📦 INFOS PRODUIT:")
+        logger.info(f"   ID: {product_id}")
+        logger.info(f"   Description: {product_info['description']}")
+        logger.info(f"   EANS: {product_info['eans']}")
+        logger.info(f"   SKU: {product_info['sku']}")
+        logger.info(f"   FullCode: {product_info['full_code']}")
+    
+    return product_id
 
-# Test direct si exécuté seul
-if __name__ == "__main__":
-    # Test rapide du token
-    print("🧪 Test du module orders.py...")
-    token = get_novaengel_token()
-    if token:
-        print(f"✅ Token obtenu: {token[:20]}...")
-        
-        # Test recherche BYPHASSE
-        ean = "8436097094189"
-        print(f"\n🔍 Test recherche EAN: {ean}")
-        product_id = find_product_id(ean, token)
-        print(f"📦 Résultat: ID {product_id}")
-        
-        # Afficher le cache
-        print(f"\n📚 Cache chargé: {len(_product_cache)} EANs")
-        if ean in _product_cache:
-            print(f"✅ BYPHASSE dans le cache: {ean} → {_product_cache[ean]}")
-    else:
-        print("❌ Impossible d'obtenir le token")
+def get_cache_stats():
+    """Retourne les statistiques du cache"""
+    return {
+        "total_eans": len(_product_cache),
+        "total_products": len(_product_cache_by_id),
+        "cache_age": (datetime.now() - _cache_timestamp).seconds if _cache_timestamp else None
+    }

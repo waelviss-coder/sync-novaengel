@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template_string
 import threading
 import os
 import time
@@ -6,6 +6,7 @@ import atexit
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
 from orders import send_order_to_novaengel, get_novaengel_stock, get_novaengel_token
+from orders import search_product_by_ean, get_cache_stats, load_product_cache
 
 # ====================== CONFIG ======================
 SHOPIFY_STORE = "plureals.myshopify.com"
@@ -74,9 +75,7 @@ def get_shopify_location_id():
         response = shopify_request("GET", "/locations.json")
         locations = response.json()["locations"]
         if locations:
-            location_id = locations[0]["id"]
-            logger.info(f"📍 Location ID: {location_id}")
-            return location_id
+            return locations[0]["id"]
         return None
     except:
         return None
@@ -90,7 +89,6 @@ def update_shopify_stock(inventory_item_id, location_id, stock):
             "available": stock
         }
         shopify_request("POST", "/inventory_levels/set.json", json=payload)
-        logger.debug(f"📈 Stock mis à jour: {inventory_item_id} → {stock}")
         return True
     except:
         return False
@@ -98,7 +96,7 @@ def update_shopify_stock(inventory_item_id, location_id, stock):
 # ====================== STOCK SYNC ======================
 def sync_all_products():
     """Synchronise le stock NovaEngel → Shopify"""
-    logger.info("🔄 Début synchronisation stock")
+    logger.info("🔄 Synchronisation stock")
     
     try:
         # 1. Stock NovaEngel
@@ -128,7 +126,7 @@ def sync_all_products():
         updated_count = 0
         for product in shopify_products:
             for variant in product["variants"]:
-                sku = str(variant.get("sku", "")).strip()
+                sku = str(variant.get("sku", "")).strip().replace("'", "")
                 if sku in stock_map:
                     current_stock = variant.get("inventory_quantity", 0)
                     new_stock = stock_map[sku]
@@ -139,14 +137,14 @@ def sync_all_products():
                             location_id,
                             new_stock
                         ):
-                            product_name = product['title'][:30] + ("..." if len(product['title']) > 30 else "")
+                            product_name = product['title'][:30]
                             logger.info(f"📦 {product_name} | SKU {sku}: {current_stock}→{new_stock}")
                             updated_count += 1
         
         if updated_count > 0:
-            logger.info(f"✅ Synchronisation terminée: {updated_count} produits mis à jour")
+            logger.info(f"✅ Synchronisation: {updated_count} produits mis à jour")
         else:
-            logger.info("✅ Synchronisation: Aucune modification nécessaire")
+            logger.info("✅ Synchronisation: Aucune modification")
             
     except Exception as e:
         logger.error(f"❌ Erreur synchronisation: {e}")
@@ -167,115 +165,135 @@ def home():
     <head>
         <title>✅ NovaEngel ↔ Shopify Sync</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }
-            h1 { color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px; }
-            .container { max-width: 800px; }
+            body { font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; background: #f5f5f5; }
+            h1 { color: #2c3e50; border-bottom: 3px solid #3498db; padding-bottom: 15px; }
+            .container { max-width: 1200px; margin: 0 auto; }
             .card { 
-                background: #f8f9fa; 
-                padding: 20px; 
+                background: white; 
+                padding: 25px; 
                 margin: 20px 0; 
-                border-radius: 8px;
-                border-left: 4px solid #3498db;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                border-radius: 10px;
+                border-left: 5px solid #3498db;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                transition: transform 0.2s;
             }
-            .success { border-left-color: #2ecc71; }
+            .card:hover { transform: translateY(-2px); }
+            .success { border-left-color: #27ae60; }
             .warning { border-left-color: #f39c12; }
+            .danger { border-left-color: #e74c3c; }
             .info { border-left-color: #3498db; }
-            a { 
-                color: #2980b9; 
-                text-decoration: none;
-                font-weight: bold;
-            }
-            a:hover { text-decoration: underline; }
-            code { 
-                background: #e8f4f8; 
-                padding: 3px 6px; 
-                border-radius: 4px; 
-                font-family: 'Courier New', monospace;
-                font-size: 0.9em;
-            }
             .endpoint { 
-                margin: 10px 0; 
-                padding: 12px; 
+                margin: 12px 0; 
+                padding: 15px; 
                 background: #e8f4f8; 
-                border-radius: 6px;
+                border-radius: 8px;
                 border: 1px solid #b3e0f2;
             }
-            .status { 
-                display: inline-block; 
-                padding: 4px 8px; 
-                border-radius: 4px; 
-                font-size: 0.8em; 
+            .btn {
+                display: inline-block;
+                padding: 10px 20px;
+                background: #3498db;
+                color: white;
+                text-decoration: none;
+                border-radius: 5px;
+                margin: 5px;
+                font-weight: bold;
+            }
+            .btn:hover { background: #2980b9; }
+            .btn-success { background: #27ae60; }
+            .btn-warning { background: #f39c12; }
+            .btn-danger { background: #e74c3c; }
+            .status-badge {
+                display: inline-block;
+                padding: 5px 10px;
+                border-radius: 20px;
+                font-size: 0.8em;
                 font-weight: bold;
                 margin-left: 10px;
             }
-            .active { background: #d4edda; color: #155724; }
-            .inactive { background: #f8d7da; color: #721c24; }
+            .online { background: #d4edda; color: #155724; }
+            .offline { background: #f8d7da; color: #721c24; }
+            .grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+                gap: 20px;
+                margin-top: 20px;
+            }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>✅ NovaEngel ↔ Shopify Synchronisation</h1>
+            <h1>🔄 NovaEngel ↔ Shopify Synchronisation</h1>
             
             <div class="card success">
-                <h3>🎉 Service Actif et Fonctionnel</h3>
-                <p>• Synchronisation automatique toutes les heures</p>
-                <p>• Webhook Shopify configuré et actif</p>
-                <p>• Commandes envoyées à NovaEngel</p>
-                <p>• Recherche automatique EAN → ID</p>
-                <span class="status active">EN LIGNE</span>
+                <h2>🎉 Service Actif et Opérationnel</h2>
+                <p><strong>Mode:</strong> Synchronisation automatique EAN → ID</p>
+                <p><strong>Statut:</strong> <span class="status-badge online">EN LIGNE</span></p>
+                <p><strong>Dernière mise à jour:</strong> <span id="currentTime">...</span></p>
             </div>
             
-            <div class="card info">
-                <h3>🔧 Outils de Test et Debug</h3>
-                <div class="endpoint">
-                    <strong><a href="/test" target="_blank">/test</a></strong><br>
-                    <small>Teste une commande avec BYPHASSE (EAN: 8436097094189)</small>
+            <div class="grid">
+                <div class="card info">
+                    <h3>🔧 Outils de Test</h3>
+                    <div class="endpoint">
+                        <a class="btn btn-success" href="/test" target="_blank">Test Commande BYPHASSE</a>
+                        <p>Teste avec EAN: 8436097094189</p>
+                    </div>
+                    <div class="endpoint">
+                        <a class="btn" href="/search-ean/8436097094189" target="_blank">Rechercher EAN</a>
+                        <p>Recherche avancée d'un EAN</p>
+                    </div>
+                    <div class="endpoint">
+                        <a class="btn" href="/cache-stats" target="_blank">Statistiques Cache</a>
+                        <p>Voir le cache produits</p>
+                    </div>
                 </div>
-                <div class="endpoint">
-                    <strong><a href="/health" target="_blank">/health</a></strong><br>
-                    <small>Vérifie l\'état du service</small>
+                
+                <div class="card warning">
+                    <h3>⚡ Actions Rapides</h3>
+                    <div class="endpoint">
+                        <a class="btn btn-warning" href="/sync-now?key=pl0reals" target="_blank">Sync Manuelle</a>
+                        <p>Synchronisation immédiate du stock</p>
+                    </div>
+                    <div class="endpoint">
+                        <a class="btn" href="/health" target="_blank">Vérifier Santé</a>
+                        <p>État du service</p>
+                    </div>
+                    <div class="endpoint">
+                        <a class="btn" href="/debug-novaengel" target="_blank">Debug NovaEngel</a>
+                        <p>Voir produits NovaEngel</p>
+                    </div>
                 </div>
-                <div class="endpoint">
-                    <strong><a href="/sync-now?key=pl0reals" target="_blank">/sync-now?key=pl0reals</a></strong><br>
-                    <small>Synchronisation manuelle du stock</small>
-                </div>
-                <div class="endpoint">
-                    <strong><a href="/check-ean/8436097094189" target="_blank">/check-ean/8436097094189</a></strong><br>
-                    <small>Vérifie un EAN spécifique</small>
-                </div>
-            </div>
-            
-            <div class="card warning">
-                <h3>📦 Webhook Shopify</h3>
-                <p><strong>URL:</strong> <code>POST /shopify/order-created</code></p>
-                <p><strong>Événement:</strong> <code>orders/create</code></p>
-                <p><strong>Format:</strong> JSON</p>
-                <p><strong>Fonctionnalité:</strong> Recherche automatique EAN → ID NovaEngel</p>
             </div>
             
             <div class="card">
-                <h3>⚙️ Configuration</h3>
-                <p><strong>Mode:</strong> Utilisation des EANs comme SKUs</p>
-                <p><strong>Avantage:</strong> Pas de mapping manuel, recherche automatique</p>
-                <p><strong>Shopify Store:</strong> plureals.myshopify.com</p>
-                <p><strong>Dernière mise à jour:</strong> <span id="currentTime">Chargement...</span></p>
+                <h3>📦 Webhook Shopify</h3>
+                <p><strong>URL:</strong> <code>POST /shopify/order-created</code></p>
+                <p><strong>Événement:</strong> <code>orders/create</code></p>
+                <p><strong>Fonctionnalité:</strong> Recherche automatique EAN → ID</p>
+                <p><strong>Statut:</strong> ✅ Actif</p>
+            </div>
+            
+            <div class="card success">
+                <h3>✅ Fonctionnalités Actives</h3>
+                <ul>
+                    <li>✅ Synchronisation automatique stock (toutes les heures)</li>
+                    <li>✅ Webhook commandes Shopify</li>
+                    <li>✅ Recherche EAN automatique</li>
+                    <li>✅ Cache produits optimisé</li>
+                    <li>✅ Gestion des erreurs complète</li>
+                    <li>✅ Support multi-formats EAN</li>
+                </ul>
             </div>
         </div>
         
         <script>
-            // Mettre à jour l'heure
             document.getElementById('currentTime').textContent = new Date().toLocaleString();
             
-            // Vérifier la santé
             fetch('/health')
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Statut service:', data.status);
-                })
-                .catch(err => {
-                    console.error('Erreur santé:', err);
-                });
+                .then(r => r.json())
+                .then(data => console.log('Service:', data.status))
+                .catch(err => console.error('Erreur:', err));
         </script>
     </body>
     </html>
@@ -287,15 +305,14 @@ def health():
     return jsonify({
         "status": "healthy",
         "service": "NovaEngel-Shopify Sync",
-        "version": "2.0",
+        "version": "3.0",
         "timestamp": time.time(),
-        "mode": "EAN-only automatic lookup",
         "features": [
+            "automatic_stock_sync",
             "shopify_webhook",
-            "novaengel_order_sending",
-            "automatic_ean_to_id_lookup",
-            "stock_sync",
-            "product_cache"
+            "ean_to_id_mapping",
+            "product_cache",
+            "error_handling"
         ]
     }), 200
 
@@ -306,61 +323,50 @@ def sync_now():
     if key != SECRET_KEY:
         return jsonify({"error": "Clé invalide"}), 403
     
-    # Lancer la sync dans un thread
     threading.Thread(target=sync_all_products, daemon=True).start()
     
     return jsonify({
         "status": "sync_started",
-        "message": "Synchronisation lancée en arrière-plan",
+        "message": "Synchronisation lancée",
         "timestamp": time.time()
     }), 200
 
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
     """Webhook Shopify - Nouvelle commande"""
-    logger.info("🎯 WEBHOOK SHOPIFY REÇU")
+    logger.info("🎯 WEBHOOK SHOPIFY RECEIVED")
     
     try:
-        # 1. Récupérer la commande
         order = request.get_json(force=True)
         order_number = order.get('name', 'N/A')
         
-        # 2. Log les informations importantes
         logger.info(f"📦 Commande #{order_number}")
         logger.info(f"📧 Client: {order.get('email', 'N/A')}")
-        logger.info(f"💰 Total: {order.get('total_price', 'N/A')}")
         logger.info(f"📝 Items: {len(order.get('line_items', []))}")
         
-        # 3. Envoyer à NovaEngel dans un thread séparé
+        # Envoyer dans un thread séparé
         threading.Thread(
             target=send_order_to_novaengel,
             args=(order,),
             daemon=True
         ).start()
         
-        # 4. Répondre immédiatement à Shopify
         return jsonify({
             "status": "processing",
             "message": "Commande envoyée à NovaEngel",
             "order_number": order_number,
-            "mode": "automatic_ean_to_id_lookup",
             "timestamp": time.time()
         }), 200
         
     except Exception as e:
         logger.error(f"❌ Erreur webhook: {e}")
-        return jsonify({
-            "error": str(e),
-            "status": "error",
-            "timestamp": time.time()
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/test")
 def test():
     """Test d'envoi de commande avec BYPHASSE"""
     logger.info("🧪 TEST COMMANDE BYPHASSE")
     
-    # Commande de test avec BYPHASSE
     test_order = {
         "name": f"TEST{int(time.time()) % 1000}",
         "email": "test@example.com",
@@ -368,9 +374,10 @@ def test():
         "currency": "EUR",
         "line_items": [
             {
-                "sku": "8436097094189",  # BYPHASSE EAN
-                "quantity": 2,
-                "price": "1.99"
+                "sku": "8436097094189",
+                "quantity": 1,
+                "price": "1.99",
+                "title": "BYPHASSE Lip Balm"
             }
         ],
         "shipping_address": {
@@ -385,7 +392,7 @@ def test():
         }
     }
     
-    # Envoyer la commande (direct pour voir les logs)
+    # Envoyer la commande
     success = send_order_to_novaengel(test_order)
     
     return jsonify({
@@ -393,68 +400,149 @@ def test():
         "success": success,
         "order_number": test_order["name"],
         "ean_tested": "8436097094189",
-        "expected_id": 94189,
-        "message": "Vérifiez les logs pour les détails",
         "timestamp": time.time()
     }), 200
 
-@app.route("/check-ean/<ean>")
-def check_ean(ean):
-    """Vérifie un EAN spécifique"""
-    logger.info(f"🔍 Vérification EAN: {ean}")
+@app.route("/search-ean/<ean>")
+def search_ean(ean):
+    """Recherche avancée d'un EAN"""
+    logger.info(f"🔍 Recherche EAN: {ean}")
     
     token = get_novaengel_token()
     if not token:
-        return jsonify({"error": "Impossible d'obtenir le token"}), 500
+        return jsonify({"error": "Pas de token"}), 500
+    
+    product_id = search_product_by_ean(ean, token)
+    
+    if product_id:
+        return jsonify({
+            "ean": ean,
+            "found": True,
+            "product_id": product_id,
+            "message": f"Produit trouvé: ID {product_id}"
+        }), 200
+    else:
+        return jsonify({
+            "ean": ean,
+            "found": False,
+            "message": "EAN non trouvé"
+        }), 404
+
+@app.route("/cache-stats")
+def cache_stats():
+    """Affiche les statistiques du cache"""
+    stats = get_cache_stats()
+    
+    return jsonify({
+        "cache_stats": stats,
+        "timestamp": time.time()
+    }), 200
+
+@app.route("/debug-novaengel")
+def debug_novaengel():
+    """Debug direct des produits NovaEngel"""
+    token = get_novaengel_token()
+    if not token:
+        return "❌ Pas de token NovaEngel", 500
     
     try:
-        # Charger quelques produits pour vérifier
         url = f"https://drop.novaengel.com/api/products/paging/{token}/0/50/en"
         response = requests.get(url, headers={"Accept": "application/json"}, timeout=20)
         
         if response.status_code != 200:
-            return jsonify({"error": f"API error: {response.status_code}"}), 500
+            return f"❌ HTTP {response.status_code}", 500
         
         products = response.json()
         
-        # Chercher l'EAN
-        found_products = []
-        for product in products:
-            eans = product.get("EANS", [])
-            if ean in eans:
-                found_products.append({
-                    "id": product.get("Id"),
-                    "description": product.get("Description"),
-                    "price": product.get("Price"),
-                    "stock": product.get("Stock"),
-                    "brand": product.get("BrandName")
-                })
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Debug NovaEngel</title>
+            <style>
+                body { font-family: Arial; margin: 20px; }
+                .product { border: 1px solid #ddd; padding: 15px; margin: 10px; border-radius: 5px; }
+                .found { background: #d4edda; border-color: #c3e6cb; }
+                .byphasse { background: #fff3cd; border-color: #ffeaa7; }
+                h3 { color: #333; }
+                .ean { font-family: monospace; background: #f8f9fa; padding: 2px 5px; }
+            </style>
+        </head>
+        <body>
+            <h1>🔍 Debug NovaEngel - 50 premiers produits</h1>
+            <p>Total: %d produits</p>
+        """ % len(products)
         
-        return jsonify({
-            "ean": ean,
-            "found": len(found_products) > 0,
-            "count": len(found_products),
-            "products": found_products,
-            "total_checked": len(products),
-            "message": "EAN trouvé" if found_products else "EAN non trouvé dans les 50 premiers produits"
-        }), 200
+        byphasse_found = False
+        for product in products:
+            product_id = product.get("Id")
+            description = product.get("Description", "")
+            eans = product.get("EANS", [])
+            sku = product.get("SKU", "")
+            
+            product_class = "product"
+            if "8436097094189" in str(eans) or "BYPHASSE" in description.upper():
+                product_class += " byphasse"
+                byphasse_found = True
+            
+            html += f"""
+            <div class="{product_class}">
+                <h3>ID: {product_id} - {description[:80]}</h3>
+                <p><strong>SKU:</strong> {sku}</p>
+                <p><strong>EANS:</strong>"""
+            
+            for ean in eans:
+                html += f'<span class="ean">{ean}</span> '
+            
+            html += "</p>"
+            
+            if "8436097094189" in str(eans):
+                html += "<p style='color:green; font-weight:bold;'>✅ BYPHASSE TROUVÉ!</p>"
+            
+            html += "</div>"
+        
+        if not byphasse_found:
+            html += "<h2 style='color:red;'>⚠️ BYPHASSE NON TROUVÉ DANS LES 50 PREMIERS PRODUITS</h2>"
+        
+        html += "</body></html>"
+        
+        return html
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return f"❌ Erreur: {e}", 500
+
+@app.route("/preload-cache")
+def preload_cache():
+    """Précharge le cache NovaEngel"""
+    key = request.args.get("key", "")
+    if key != SECRET_KEY:
+        return jsonify({"error": "Clé invalide"}), 403
+    
+    token = get_novaengel_token()
+    if not token:
+        return jsonify({"error": "Pas de token"}), 500
+    
+    load_product_cache(token, force_reload=True)
+    stats = get_cache_stats()
+    
+    return jsonify({
+        "status": "cache_preloaded",
+        "stats": stats,
+        "timestamp": time.time()
+    }), 200
 
 # ====================== INITIALISATION ======================
 def initialize_app():
     """Initialise l'application"""
-    logger.info("🚀 Initialisation de l'application...")
-    logger.info(f"🏪 Shopify Store: {SHOPIFY_STORE}")
-    logger.info("📦 Mode: EAN-only avec recherche automatique")
-    logger.info("⏰ Synchronisation automatique: Toutes les heures")
+    logger.info("🚀 Initialisation...")
+    logger.info(f"🏪 Store Shopify: {SHOPIFY_STORE}")
+    logger.info("📊 Mode: EAN-only avec recherche automatique")
     
     # Synchronisation initiale
-    time.sleep(5)
+    time.sleep(3)
     threading.Thread(target=sync_all_products, daemon=True).start()
     
-    logger.info("✅ Application initialisée et prête")
+    logger.info("✅ Application initialisée")
 
 # ====================== MAIN ======================
 if __name__ == "__main__":
@@ -462,7 +550,7 @@ if __name__ == "__main__":
     initialize_app()
     
     # Démarrer le serveur
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"🌐 Serveur démarré sur le port {port}")
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"🌐 Serveur sur le port {port}")
     
     app.run(host="0.0.0.0", port=port, threaded=True)
