@@ -1,40 +1,39 @@
 from flask import Flask, request, jsonify
 import logging
-import os
 from orders import send_order_to_novaengel
 
-# ================= LOGGER =================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
-
-# ================= APP =================
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return "✅ Shopify → NovaEngel (EAN ONLY) actif"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
-@app.route("/health")
+# --------------------------------------------------
+# HEALTH CHECK
+# --------------------------------------------------
+@app.route("/", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"}), 200
+    return "OK", 200
 
+
+# --------------------------------------------------
+# SHOPIFY WEBHOOK
+# --------------------------------------------------
 @app.route("/shopify/order-created", methods=["POST"])
-def shopify_webhook():
-    logger.info("🎯 WEBHOOK SHOPIFY REÇU")
-
+def shopify_order_created():
     try:
-        order = request.get_json(force=True)
-        success = send_order_to_novaengel(order)
+        logging.info("🎯 Webhook Shopify reçu")
+        order = request.get_json()
 
-        return jsonify({
-            "status": "success" if success else "failed",
-            "order": order.get("name")
-        }), 200
+        send_order_to_novaengel(order)
+
+        return jsonify({"status": "ok"}), 200
 
     except Exception as e:
-        logger.error(f"❌ Webhook error: {e}")
+        logging.error(f"❌ Erreur traitement commande: {e}")
         return jsonify({"error": str(e)}), 500
 
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(port=5000)

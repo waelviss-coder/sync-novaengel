@@ -1,116 +1,98 @@
 import requests
-import os
 import logging
+import os
 
-# ================= CONFIG =================
+NOVA_BASE_URL = "https://drop.novaengel.com/api"
 NOVA_USER = os.environ.get("NOVA_USER")
-NOVA_PASS = os.environ.get("NOVA_PASS")
+NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
+LANG = "fr"
 
-# ================= LOGGER =================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
+# --------------------------------------------------
+# LOGIN
+# --------------------------------------------------
+def nova_login():
+    url = f"{NOVA_BASE_URL}/login"
+    payload = {
+        "user": NOVA_USER,
+        "password": NOVA_PASSWORD
+    }
 
-# ================= TOKEN =================
-def get_novaengel_token():
-    try:
-        r = requests.post(
-            "https://drop.novaengel.com/api/login",
-            json={"user": NOVA_USER, "password": NOVA_PASS},
-            timeout=10
-        )
-        if r.status_code == 200:
-            token = r.json().get("Token")
-            if token:
-                logger.info("🔑 Token NovaEngel obtenu")
-                return token
-    except Exception as e:
-        logger.error(f"❌ Erreur token: {e}")
-    return None
+    r = requests.post(url, json=payload, timeout=20)
+    r.raise_for_status()
 
-# ================= EAN → PRODUCT ID (STOCK) =================
-def get_product_id_by_ean(ean, token):
-    ean = str(ean).strip().replace("'", "")
-    logger.info(f"🔍 Recherche EAN dans le STOCK: {ean}")
-
-    url = f"https://drop.novaengel.com/api/stocks/{token}"
-    r = requests.get(url, timeout=30)
-
-    if r.status_code != 200:
-        logger.error(f"❌ Stock API error {r.status_code}")
-        return None
-
-    stocks = r.json()
-    logger.info(f"📦 {len(stocks)} produits stock analysés")
-
-    for item in stocks:
-        if str(item.get("EAN")) == ean:
-            product_id = item.get("ProductId")
-            logger.info(f"✅ EAN trouvé → ProductId {product_id}")
-            return product_id
-
-    logger.error(f"❌ EAN {ean} NON TROUVÉ dans /api/stocks")
-    return None
-
-# ================= SEND ORDER =================
-def send_order_to_novaengel(order):
-    logger.info("🚀 ENVOI COMMANDE NOVAENGEL")
-
-    token = get_novaengel_token()
+    token = r.json().get("Token")
     if not token:
-        return False
+        raise Exception("❌ Token Nova Engel non reçu")
+
+    logging.info("🔑 Token Nova Engel obtenu")
+    return token
+
+
+# --------------------------------------------------
+# GET PRODUCT ID BY EAN
+# --------------------------------------------------
+def get_product_id_by_ean(token, ean):
+    url = f"{NOVA_BASE_URL}/products/availables/{token}/{LANG}"
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+
+    products = r.json()
+    logging.info(f"📊 {len(products)} produits analysés")
+
+    for p in products:
+        eans = p.get("EANs", [])
+        if ean in eans:
+            logging.info(f"✅ EAN trouvé → productId {p['Id']}")
+            return p["Id"]
+
+    logging.error(f"❌ EAN non trouvé dans Nova Engel: {ean}")
+    return None
+
+
+# --------------------------------------------------
+# SEND ORDER TO NOVA ENGEL
+# --------------------------------------------------
+def send_order_to_novaengel(shopify_order):
+    token = nova_login()
 
     lines = []
-    for item in order.get("line_items", []):
-        ean = item.get("sku")
-        qty = int(item.get("quantity", 1))
 
-        if not ean:
-            continue
+    for item in shopify_order["line_items"]:
+        ean = item["sku"].strip()
+        qty = item["quantity"]
 
-        product_id = get_product_id_by_ean(ean, token)
+        logging.info(f"🔍 Recherche EAN NovaEngel: {ean}")
+
+        product_id = get_product_id_by_ean(token, ean)
         if not product_id:
-            return False
+            raise Exception(f"EAN {ean} introuvable chez Nova Engel")
 
         lines.append({
             "productId": product_id,
             "units": qty
         })
 
-    if not lines:
-        logger.error("❌ Aucun produit valide")
-        return False
+    shipping = shopify_order["shipping_address"]
 
-    shipping = order.get("shipping_address", {})
-    phone = ''.join(filter(str.isdigit, shipping.get("phone", ""))) or "600000000"
-
-    payload = [{
-        "orderNumber": order.get("name", "").replace("#", "")[:15],
-        "carrierNotes": f"Shopify {order.get('name')}",
+    order_payload = [{
+        "orderNumber": str(shopify_order["name"]).replace("#", "").zfill(10),
+        "carrierNotes": "",
+        "valoration": 0,
         "lines": lines,
-        "name": shipping.get("first_name", "Client")[:50],
-        "secondName": shipping.get("last_name", "")[:50],
-        "telephone": phone[:15],
-        "mobile": phone[:15],
-        "street": shipping.get("address1", "Adresse")[:100],
-        "city": shipping.get("city", "Ville")[:50],
-        "postalCode": shipping.get("zip", "00000")[:10],
-        "country": (shipping.get("country_code") or "ES")[:2]
+        "name": shipping["first_name"],
+        "secondName": shipping["last_name"],
+        "telephone": "",
+        "mobile": "",
+        "street": shipping["address1"],
+        "city": shipping["city"],
+        "county": shipping.get("province", ""),
+        "postalCode": shipping["zip"],
+        "country": shipping["country_code"]
     }]
 
-    url = f"https://drop.novaengel.com/api/orders/sendv2/{token}"
-    r = requests.post(url, json=payload, timeout=30)
+    url = f"{NOVA_BASE_URL}/orders/sendv2/{token}"
+    r = requests.post(url, json=order_payload, timeout=30)
+    r.raise_for_status()
 
-    logger.info(f"📥 HTTP {r.status_code}")
-
-    if r.status_code == 200:
-        result = r.json()[0]
-        if result.get("Errors"):
-            for e in result["Errors"]:
-                logger.error(f"❌ NovaEngel error: {e}")
-            return False
-
-        logger.info(f"🎉 Commande acceptée: {result}")
-        return True
-
-    logger.error(r.text[:200])
-    return False
+    logging.info("✅ Commande envoyée à Nova Engel")
+    return r.json()
