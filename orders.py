@@ -35,83 +35,84 @@ def get_novaengel_token():
         logger.error(f"❌ Erreur token: {e}")
         return None
 
-# =========================== RECHERCHE SIMPLE ===========================
-def search_product_in_novaengel(sku, token):
-    """Cherche un produit par SKU/EAN dans NovaEngel - Version SIMPLE"""
-    # Nettoyer le SKU (enlever apostrophe)
-    sku_clean = str(sku).strip().replace("'", "")
+# =========================== RECHERCHE RÉELLE ===========================
+def find_real_product_id(ean, token):
+    """Trouve le VRAI ID dans NovaEngel pour un EAN"""
+    # Nettoyer l'EAN
+    ean_clean = str(ean).strip().replace("'", "")
     
-    logger.info(f"🔍 Recherche SKU: '{sku_clean}'")
+    logger.info(f"🔍 Recherche RÉELLE EAN: {ean_clean}")
     
     try:
-        # Chercher seulement dans la première page (50 produits)
-        url = f"https://drop.novaengel.com/api/products/paging/{token}/0/50/en"
-        response = requests.get(url, timeout=20)
+        # Chercher dans NovaEngel
+        url = f"https://drop.novaengel.com/api/products/paging/{token}/0/100/en"
+        response = requests.get(url, timeout=30)
         
         if response.status_code != 200:
+            logger.error(f"❌ API error: {response.status_code}")
             return None
         
         products = response.json()
+        logger.info(f"📊 {len(products)} produits analysés")
         
-        # DEBUG: Afficher le premier produit pour voir la structure
+        # DEBUG: Afficher la structure
         if products:
-            first_product = products[0]
-            logger.info(f"🔍 Structure produit: {list(first_product.keys())}")
+            logger.info(f"🔍 Champs disponibles: {list(products[0].keys())}")
         
-        # Chercher le produit
+        # Chercher l'EAN
+        found_products = []
         for product in products:
             product_id = product.get("Id")
-            if not product_id:
-                continue
+            description = product.get("Description", "")
             
-            # Vérifier TOUS les champs possibles
-            for key, value in product.items():
-                if isinstance(value, str) and sku_clean in value:
-                    logger.info(f"✅ Trouvé dans champ '{key}': {value[:50]}")
+            # 1. Chercher dans EANS
+            eans = product.get("EANS", [])
+            for e in eans:
+                if str(e).strip() == ean_clean:
+                    logger.info(f"✅ EAN trouvé dans 'EANS'! ID: {product_id}")
+                    logger.info(f"   Description: {description[:50]}")
+                    logger.info(f"   EANS: {eans}")
                     return product_id
-                elif isinstance(value, list):
-                    for item in value:
-                        if str(item) == sku_clean:
-                            logger.info(f"✅ Trouvé dans liste '{key}': {item}")
-                            return product_id
+            
+            # 2. Chercher dans d'autres champs
+            sku = product.get("SKU", "")
+            full_code = product.get("FullCode", "")
+            barcode = product.get("Barcode", "")
+            
+            if ean_clean == str(sku):
+                logger.info(f"✅ EAN trouvé dans 'SKU'! ID: {product_id}")
+                return product_id
+            
+            if ean_clean == str(full_code):
+                logger.info(f"✅ EAN trouvé dans 'FullCode'! ID: {product_id}")
+                return product_id
+            
+            if ean_clean == str(barcode):
+                logger.info(f"✅ EAN trouvé dans 'Barcode'! ID: {product_id}")
+                return product_id
+            
+            # 3. Chercher dans description (BYPHASSE)
+            if "BYPHASSE" in description.upper():
+                logger.info(f"🔍 BYPHASSE trouvé: ID {product_id}")
+                logger.info(f"   EANS: {eans}")
+                logger.info(f"   SKU: {sku}")
+                logger.info(f"   FullCode: {full_code}")
+                
+                if ean_clean in str(eans) or ean_clean in str(sku) or ean_clean in str(full_code):
+                    logger.info(f"✅ BYPHASSE avec EAN correspondant! ID: {product_id}")
+                    return product_id
         
-        logger.warning(f"⚠️ SKU '{sku_clean}' non trouvé dans les 50 premiers produits")
+        logger.error(f"❌ EAN {ean_clean} NON TROUVÉ dans NovaEngel")
         return None
         
     except Exception as e:
         logger.error(f"❌ Erreur recherche: {e}")
         return None
 
-# =========================== BYPHASSE SPECIAL ===========================
-def get_product_id_for_sku(sku, token):
-    """Retourne l'ID NovaEngel pour un SKU - avec règles spéciales"""
-    sku_clean = str(sku).strip().replace("'", "")
-    
-    # 1. RÈGLE SPÉCIALE BYPHASSE
-    # Si c'est un EAN BYPHASSE, retourner l'ID connu
-    if sku_clean in ["8436097094189", "8436097094196", "8436097094202"]:
-        # BYPHASSE EANs connus → ID 2731
-        logger.info(f"🎯 BYPHASSE EAN {sku_clean} → ID 2731")
-        return 2731
-    
-    # 2. Recherche dans NovaEngel
-    product_id = search_product_in_novaengel(sku, token)
-    
-    if product_id:
-        return product_id
-    
-    # 3. FALLBACK: Utiliser les derniers chiffres comme ID
-    if sku_clean[-5:].isdigit():
-        fallback_id = int(sku_clean[-5:])
-        logger.warning(f"⚠️ Fallback: {sku_clean} → ID {fallback_id}")
-        return fallback_id
-    
-    return None
-
 # =========================== ENVOI COMMANDE ===========================
 def send_order_to_novaengel(order):
-    """Envoie la commande à NovaEngel - SIMPLE"""
-    logger.info("🚀 ENVOI COMMANDE")
+    """Envoie la commande à NovaEngel - Version FINALE"""
+    logger.info("🚀 ENVOI COMMANDE NOVAENGEL")
     
     try:
         # 1. Token
@@ -121,26 +122,20 @@ def send_order_to_novaengel(order):
             return False
         
         # 2. Traiter produits
-        order_number = order.get('name', 'N/A')
         items = order.get("line_items", [])
-        
-        logger.info(f"📦 Commande #{order_number} - {len(items)} produit(s)")
-        
         lines = []
-        for idx, item in enumerate(items, 1):
-            sku = str(item.get("sku", "")).strip()
+        
+        for item in items:
+            ean = str(item.get("sku", "")).strip()
             quantity = int(item.get("quantity", 1))
-            title = item.get("title", "")[:50]
             
-            if not sku:
-                logger.warning(f"⚠️ Produit {idx} sans SKU ignoré")
+            if not ean:
                 continue
             
-            logger.info(f"📦 Produit {idx}: {title}")
-            logger.info(f"   SKU: '{sku}', Qty: {quantity}")
+            logger.info(f"📦 Traitement EAN: '{ean}', Qty: {quantity}")
             
-            # Obtenir l'ID
-            product_id = get_product_id_for_sku(sku, token)
+            # Trouver le VRAI ID
+            product_id = find_real_product_id(ean, token)
             
             if product_id:
                 lines.append({
@@ -149,20 +144,24 @@ def send_order_to_novaengel(order):
                 })
                 logger.info(f"   ✅ ID NovaEngel: {product_id}")
             else:
-                logger.error(f"❌ Produit non trouvé: {sku}")
+                logger.error(f"❌ EAN non trouvé dans NovaEngel: {ean}")
                 return False
         
         if not lines:
             logger.error("❌ Aucun produit valide")
             return False
         
-        # 3. Adresse
+        # 3. Préparer payload
         shipping = order.get("shipping_address", {})
+        order_num = order.get("name", "ORDER").replace("#", "").replace("TEST", "")
         
-        # 4. Payload SIMPLE
-        order_num = order.get("name", "").replace("#", "").replace("TEST", "")
-        if not order_num.isdigit():
-            order_num = str(int(time.time()))[-8:]
+        # Téléphone
+        phone = shipping.get("phone", "")
+        if phone:
+            phone_digits = ''.join(filter(str.isdigit, phone))
+            phone = phone_digits if phone_digits else "600000000"
+        else:
+            phone = "600000000"
         
         payload = [{
             "orderNumber": order_num[:15],
@@ -171,8 +170,8 @@ def send_order_to_novaengel(order):
             "lines": lines,
             "name": shipping.get("first_name", "Client")[:50],
             "secondName": shipping.get("last_name", "")[:50],
-            "telephone": "600000000",
-            "mobile": "600000000",
+            "telephone": phone[:15],
+            "mobile": phone[:15],
             "street": shipping.get("address1", "Adresse")[:100],
             "city": shipping.get("city", "Ville")[:50],
             "postalCode": shipping.get("zip", "00000")[:10],
@@ -181,7 +180,7 @@ def send_order_to_novaengel(order):
         
         logger.info(f"📦 Payload prêt: {len(lines)} produit(s)")
         
-        # 5. Envoi
+        # 4. Envoyer
         url = f"https://drop.novaengel.com/api/orders/sendv2/{token}"
         
         response = requests.post(
@@ -191,13 +190,12 @@ def send_order_to_novaengel(order):
             timeout=30
         )
         
-        # 6. Vérifier réponse
         logger.info(f"📥 Réponse HTTP: {response.status_code}")
         
         if response.status_code == 200:
             try:
                 result = response.json()
-                logger.info(f"📊 Réponse JSON: {result}")
+                logger.info(f"📊 Réponse complète: {result}")
                 
                 if isinstance(result, list) and result:
                     order_result = result[0]
@@ -207,8 +205,13 @@ def send_order_to_novaengel(order):
                         return False
                     else:
                         booking_code = order_result.get('BookingCode')
+                        message = order_result.get('Message')
                         if booking_code:
                             logger.info(f"🎉 SUCCÈS! BookingCode: {booking_code}")
+                        elif message:
+                            logger.info(f"📝 Message: {message}")
+                        else:
+                            logger.info("✅ Commande acceptée")
                         return True
             except Exception as e:
                 logger.error(f"❌ Erreur parsing JSON: {e}")
@@ -220,5 +223,5 @@ def send_order_to_novaengel(order):
             return False
             
     except Exception as e:
-        logger.error(f"💥 Erreur: {e}")
+        logger.error(f"💥 Erreur inattendue: {e}")
         return False
