@@ -1,26 +1,31 @@
 from flask import Flask, jsonify, request
 import threading
-import requests
 import os
 import time
 import atexit
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
-from orders import send_order_to_novaengel
+from orders import send_order_to_novaengel, get_novaengel_token
 
 # ====================== CONFIG ======================
 SHOPIFY_STORE = "plureals.myshopify.com"
 SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-NOVA_USER = os.environ.get("NOVA_USER")
-NOVA_PASS = os.environ.get("NOVA_PASS")
 SECRET_KEY = os.environ.get("SECRET_KEY", "pl0reals")
 
-app = Flask(__name__)
-logging.getLogger('apscheduler').setLevel(logging.WARNING)
+# ====================== LOGGER ======================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s'
+)
+logger = logging.getLogger(__name__)
 
+# ====================== APP ======================
+app = Flask(__name__)
+
+# ====================== SHOPIFY ======================
+import requests
 session = requests.Session()
 
-# ====================== GESTION 429 INFALLIBLE ======================
 def shopify_request(method, url, **kwargs):
     attempt = 0
     while True:
@@ -29,11 +34,8 @@ def shopify_request(method, url, **kwargs):
             r = session.request(method, url, **kwargs, timeout=30)
             if r.status_code == 429:
                 retry_after = r.headers.get("Retry-After", "8")
-                try:
-                    wait = max(float(retry_after), 2)
-                except:
-                    wait = 8
-                print(f"429 → attente {wait} secondes...")
+                wait = max(float(retry_after), 2)
+                logger.warning(f"429 rate limit → attente {wait}s...")
                 time.sleep(wait)
                 continue
             r.raise_for_status()
@@ -41,33 +43,16 @@ def shopify_request(method, url, **kwargs):
         except requests.exceptions.RequestException as e:
             attempt += 1
             if attempt >= 8:
+                logger.error(f"Erreur réseau après 8 tentatives: {e}")
                 raise
             wait = 2 ** attempt
-            print(f"Erreur réseau (tentative {attempt}/8) → attente {wait}s : {e}")
+            logger.warning(f"Erreur réseau (tentative {attempt}/8) → attente {wait}s : {e}")
             time.sleep(wait)
 
-# ====================== NOVA ENGEL ======================
-def get_novaengel_token():
-    r = session.post("https://drop.novaengel.com/api/login",
-                     json={"user": NOVA_USER, "password": NOVA_PASS}, timeout=30)
-    r.raise_for_status()
-    token = r.json().get("Token") or r.json().get("token")
-    if not token:
-        raise Exception("Token NovaEngel manquant")
-    return token
-
-def get_novaengel_stock():
-    token = get_novaengel_token()
-    r = session.get(f"https://drop.novaengel.com/api/stock/update/{token}", timeout=60)
-    r.raise_for_status()
-    return r.json()
-
-# ====================== SHOPIFY ======================
 def get_all_shopify_products():
     products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
-
     while url:
         r = shopify_request("GET", url, headers=headers)
         products.extend(r.json()["products"])
@@ -89,30 +74,32 @@ def update_shopify_stock(inventory_item_id, location_id, stock):
     headers = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN, "Content-Type": "application/json"}
     payload = {"location_id": location_id, "inventory_item_id": inventory_item_id, "available": stock}
     shopify_request("POST", url, json=payload, headers=headers)
+    logger.info(f"✅ Stock mis à jour pour inventory_item_id={inventory_item_id} → {stock}")
 
 # ====================== SYNC ======================
+from orders import get_novaengel_stock
+
 def sync_all_products():
-    print("\nDÉBUT SYNCHRONISATION AUTOMATIQUE")
+    logger.info("🔄 Début synchronisation automatique")
     try:
         nova = get_novaengel_stock()
         shopify = get_all_shopify_products()
         location_id = get_shopify_location_id()
 
         nova_map = {str(item.get("Id","")).strip(): item.get("Stock",0) for item in nova if item.get("Id")}
-
         modified = 0
+
         for product in shopify:
             for variant in product["variants"]:
                 sku = variant["sku"].strip().replace("'", "")
                 if sku in nova_map and nova_map[sku] != variant["inventory_quantity"]:
                     update_shopify_stock(variant["inventory_item_id"], location_id, nova_map[sku])
-                    print(f"MISE À JOUR → {product['title']} | SKU {sku} : {variant['inventory_quantity']} → {nova_map[sku]}")
+                    logger.info(f"MISE À JOUR → {product['title']} | SKU {sku} : {variant['inventory_quantity']} → {nova_map[sku]}")
                     modified += 1
 
-        print(f"SYNCHRONISATION TERMINÉE → {modified} produit(s) mis à jour\n" if modified else "Aucune modification\n")
+        logger.info(f"SYNCHRONISATION TERMINÉE → {modified} produit(s) mis à jour" if modified else "Aucune modification")
     except Exception as e:
-        print(f"ERREUR FATALE : {e}\n")
-        raise
+        logger.exception(f"Erreur lors de la synchronisation: {e}")
 
 # ====================== SCHÉDULER ======================
 scheduler = BackgroundScheduler(timezone="Europe/Paris")
@@ -136,15 +123,15 @@ def home():
 def shopify_order_created():
     try:
         order = request.get_json(force=True)
-        result = send_order_to_novaengel(order)
-        return jsonify({"status": "order sent to NovaEngel", "nova_response": result}), 200
+        threading.Thread(target=send_order_to_novaengel, args=(order,)).start()
+        return jsonify({"status": "order sent to NovaEngel"}), 200
     except Exception as e:
-        logging.exception("Erreur webhook commande")
+        logger.exception("Erreur webhook commande")
         return jsonify({"error": str(e)}), 500
 
 # ====================== START ======================
 if __name__ == "__main__":
-    print("Démarrage – première sync dans 10 secondes…")
+    logger.info("🚀 Démarrage – première sync dans 10 secondes…")
     time.sleep(10)
     threading.Thread(target=sync_all_products).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), threaded=True)
