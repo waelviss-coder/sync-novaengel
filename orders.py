@@ -1,25 +1,18 @@
 import requests
 import os
 import time
-import logging
 
-# =========================
-# CONFIG & CREDENTIALS
-# =========================
+# ===========================
+# Credentials NovaEngel
+# ===========================
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
-# Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
-
-# =========================
-# TOKEN NOVA ENGEL
-# =========================
+# ===========================
+# Obtenir le token NovaEngel
+# ===========================
 def get_novaengel_token():
-    """
-    Obtenir un token d'authentification NovaEngel.
-    Timeout augmenté pour éviter les erreurs de timeout.
-    """
+    print("🔑 Tentative d'obtenir le token NovaEngel...")
     try:
         r = requests.post(
             "https://drop.novaengel.com/api/login",
@@ -28,33 +21,34 @@ def get_novaengel_token():
         )
         r.raise_for_status()
         token = r.json().get("Token") or r.json().get("token")
-        if not token:
-            raise Exception("Token NovaEngel manquant")
-        logging.info("✅ Token NovaEngel obtenu")
+        print(f"✅ Token reçu: {token[:6]}...")  # on ne montre que les 6 premiers caractères pour sécurité
         return token
     except requests.exceptions.RequestException as e:
-        logging.error(f"❌ Erreur lors de la récupération du token : {e}")
-        raise
+        print(f"❌ Impossible d'obtenir le token NovaEngel: {e}")
+        return None
 
-# =========================
-# ENVOI DE COMMANDE
-# =========================
+# ===========================
+# Envoyer une commande à NovaEngel
+# ===========================
 def send_order_to_novaengel(order):
-    """
-    Envoie la commande Shopify vers NovaEngel avec retry automatique 3 fois.
-    """
+    print(f"📦 Nouvelle commande reçue pour traitement: {order.get('name')}")
     token = get_novaengel_token()
+    if not token:
+        print("❌ Annulation de l'envoi: pas de token")
+        return
 
     # Mapping des items
     items = []
     for item in order.get("line_items", []):
         if item.get("sku"):
             items.append({
-                "Reference": item["sku"],
+                "Reference": item["sku"],  # SKU ou ProductId NovaEngel
                 "Quantity": item["quantity"],
                 "Price": item["price"]
             })
-
+    if not items:
+        print("⚠ Aucun item valide trouvé dans la commande")
+    
     # Mapping de la commande
     payload = {
         "OrderNumber": order.get("name", f"TEST-{int(time.time())}"),
@@ -74,6 +68,8 @@ def send_order_to_novaengel(order):
         "Items": items
     }
 
+    print(f"📤 Payload à envoyer à NovaEngel: {payload}")
+
     # Retry automatique en cas de timeout
     for attempt in range(3):
         try:
@@ -83,12 +79,12 @@ def send_order_to_novaengel(order):
                 timeout=90
             )
             r.raise_for_status()
-            logging.info(f"✅ Commande {payload['OrderNumber']} envoyée à NovaEngel")
-            return r.json()
+            print(f"✅ Commande {payload['OrderNumber']} envoyée à NovaEngel")
+            print(f"💬 Réponse NovaEngel: {r.text}")
+            break
         except requests.exceptions.ReadTimeout:
-            logging.warning(f"⚠ Timeout, nouvelle tentative {attempt+1}/3 dans 5s")
+            print(f"⚠ Timeout, nouvelle tentative {attempt+1}/3 dans 5s")
             time.sleep(5)
         except requests.exceptions.RequestException as e:
-            logging.error(f"❌ Erreur lors de l'envoi de la commande : {e}")
-            raise
-    raise Exception(f"La commande {payload['OrderNumber']} n'a pas pu être envoyée après 3 tentatives")
+            print(f"❌ Erreur lors de l'envoi à NovaEngel: {e}")
+            break
