@@ -4,49 +4,48 @@ import os
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
-SESSION = requests.Session()
-
-
 def get_novaengel_token():
-    r = SESSION.post(
+    r = requests.post(
         "https://drop.novaengel.com/api/login",
         json={"user": NOVA_USER, "password": NOVA_PASS},
         timeout=30
     )
     r.raise_for_status()
-    token = r.json().get("Token") or r.json().get("token")
-    if not token:
-        raise Exception("Token NovaEngel manquant")
-    return token
-
+    return r.json().get("Token") or r.json().get("token")
 
 def send_order_to_novaengel(order):
     token = get_novaengel_token()
 
-    products = []
+    items = []
     for item in order.get("line_items", []):
         if item.get("sku"):
-            products.append({
-                "Id": item["sku"].strip(),
-                "Qte": item["quantity"]
+            items.append({
+                "Reference": item["sku"],
+                "Quantity": item["quantity"],
+                "Price": item["price"]
             })
 
-    if not products:
-        raise Exception("Aucun produit valide à envoyer")
-
-    shipping = order.get("shipping_address", {})
-
     payload = {
-        "Client": shipping.get("name", "Client Shopify"),
-        "Telephone": shipping.get("phone", ""),
-        "Adresse": shipping.get("address1", ""),
-        "Ville": shipping.get("city", ""),
-        "Produits": products
+        "OrderNumber": order["name"],
+        "Date": order["created_at"],
+        "Total": order["total_price"],
+        "Currency": order["currency"],
+        "Customer": {
+            "FirstName": order["shipping_address"]["first_name"],
+            "LastName": order["shipping_address"]["last_name"],
+            "Address": order["shipping_address"]["address1"],
+            "City": order["shipping_address"]["city"],
+            "Zip": order["shipping_address"]["zip"],
+            "Country": order["shipping_address"]["country"],
+            "Phone": order["shipping_address"].get("phone"),
+            "Email": order.get("email")
+        },
+        "Items": items
     }
 
-    r = SESSION.post(
-        f"https://drop.novaengel.com/api/order/add/{token}",
+    r = requests.post(
+        f"https://drop.novaengel.com/api/order/create/{token}",
         json=payload,
-        timeout=60
+        timeout=30
     )
     r.raise_for_status()
