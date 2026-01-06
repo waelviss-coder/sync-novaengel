@@ -16,14 +16,19 @@ def get_novaengel_token():
     Se connecte à NovaEngel pour obtenir un token d'authentification.
     Timeout augmenté à 90 secondes pour éviter les erreurs ReadTimeout.
     """
-    r = requests.post(
-        "https://drop.novaengel.com/api/login",
-        json={"user": NOVA_USER, "password": NOVA_PASS},
-        timeout=90
-    )
-    r.raise_for_status()
-    return r.json().get("Token") or r.json().get("token")
-
+    try:
+        r = requests.post(
+            "https://drop.novaengel.com/api/login",
+            json={"user": NOVA_USER, "password": NOVA_PASS},
+            timeout=90
+        )
+        r.raise_for_status()
+        token = r.json().get("Token") or r.json().get("token")
+        print(f"✅ Token NovaEngel obtenu: {token[:6]}...")  # Ne pas afficher le token entier
+        return token
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erreur lors de la récupération du token NovaEngel: {e}")
+        raise
 
 # ===========================
 # Envoyer une commande à NovaEngel
@@ -33,7 +38,6 @@ def send_order_to_novaengel(order):
     Envoie la commande Shopify vers NovaEngel.
     Retry automatique 3 fois en cas de timeout.
     """
-
     token = get_novaengel_token()
 
     # Mapping des items
@@ -75,6 +79,7 @@ def send_order_to_novaengel(order):
             )
             r.raise_for_status()
             print(f"✅ Commande {payload['OrderNumber']} envoyée à NovaEngel")
+            print(f"📦 Réponse NovaEngel: {r.text}")
             break
         except requests.exceptions.ReadTimeout:
             print(f"⚠ Timeout, nouvelle tentative {attempt+1}/3 dans 5s")
@@ -82,4 +87,3 @@ def send_order_to_novaengel(order):
         except requests.exceptions.RequestException as e:
             print(f"❌ Erreur lors de l'envoi à NovaEngel: {e}")
             break
-
