@@ -15,42 +15,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# =========================== TOKEN ===========================
-def get_novaengel_token():
-    try:
-        r = requests.post(
-            "https://drop.novaengel.com/api/login",
-            json={"user": NOVA_USER, "password": NOVA_PASS},
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
-            timeout=10
-        )
-        if r.status_code == 200:
-            data = r.json()
-            token = data.get("Token") or data.get("token")
-            if token:
-                return token
-        return None
-    except:
-        return None
-
-# =========================== ENVOI COMMANDE ===========================
-import requests
-import os
-import time
-import logging
-import json
-
-# =========================== CONFIG ===========================
-NOVA_USER = os.environ.get("NOVA_USER")
-NOVA_PASS = os.environ.get("NOVA_PASS")
-
-# =========================== LOGGER ===========================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 # Cache pour éviter les recherches répétées
 PRODUCT_CACHE = {}
 LAST_CACHE_TIME = 0
