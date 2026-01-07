@@ -1,8 +1,13 @@
 from flask import Flask, request, jsonify
 import logging
+import os
+
 from orders import send_order_to_novaengel
 
-app = Flask(__name__)
+# --------------------------------------------------
+# APP
+# --------------------------------------------------
+app = Flask(_name_)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,17 +28,23 @@ def health():
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
     try:
-        logging.info("🎯 Webhook Shopify reçu")
-        order = request.get_json()
+        logging.info("🛒 Webhook Shopify reçu")
 
+        order = request.get_json(force=True)
         send_order_to_novaengel(order)
 
-        return jsonify({"status": "ok"}), 200
+        return jsonify({"status": "order sent to Nova Engel"}), 200
 
     except Exception as e:
-        logging.error(f"❌ Erreur traitement commande: {e}")
+        logging.exception("❌ Erreur traitement commande")
         return jsonify({"error": str(e)}), 500
 
 
-if __name__ == "__main__":
-    app.run(port=5000)
+# --------------------------------------------------
+# START
+# --------------------------------------------------
+if _name_ == "_main_":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 8080))
+    )

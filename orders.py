@@ -1,98 +1,99 @@
 import requests
 import logging
 import os
+import re
 
+# --------------------------------------------------
+# CONFIG
+# --------------------------------------------------
 NOVA_BASE_URL = "https://drop.novaengel.com/api"
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
-LANG = "fr"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(_name_)
 
 # --------------------------------------------------
-# LOGIN
+# AUTH
 # --------------------------------------------------
 def nova_login():
-    url = f"{NOVA_BASE_URL}/login"
-    payload = {
-        "user": NOVA_USER,
-        "password": NOVA_PASSWORD
-    }
-
-    r = requests.post(url, json=payload, timeout=20)
+    r = requests.post(
+        f"{NOVA_BASE_URL}/login",
+        json={
+            "user": NOVA_USER,
+            "password": NOVA_PASSWORD
+        },
+        timeout=20
+    )
     r.raise_for_status()
 
     token = r.json().get("Token")
     if not token:
-        raise Exception("❌ Token Nova Engel non reçu")
+        raise Exception("Token Nova Engel manquant")
 
-    logging.info("🔑 Token Nova Engel obtenu")
+    logger.info("🔑 Token Nova Engel obtenu")
     return token
 
 
 # --------------------------------------------------
-# GET PRODUCT ID BY EAN
+# UTILS
 # --------------------------------------------------
-def get_product_id_by_ean(token, ean):
-    url = f"{NOVA_BASE_URL}/products/availables/{token}/{LANG}"
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-
-    products = r.json()
-    logging.info(f"📊 {len(products)} produits analysés")
-
-    for p in products:
-        eans = p.get("EANs", [])
-        if ean in eans:
-            logging.info(f"✅ EAN trouvé → productId {p['Id']}")
-            return p["Id"]
-
-    logging.error(f"❌ EAN non trouvé dans Nova Engel: {ean}")
-    return None
+def digits_only(value):
+    """Supprime tout sauf les chiffres"""
+    return re.sub(r"\D", "", str(value or ""))
 
 
 # --------------------------------------------------
-# SEND ORDER TO NOVA ENGEL
+# SEND ORDER
 # --------------------------------------------------
 def send_order_to_novaengel(shopify_order):
+    logger.info(f"📦 Traitement commande {shopify_order.get('name')}")
+
     token = nova_login()
 
     lines = []
 
-    for item in shopify_order["line_items"]:
-        ean = item["sku"].strip()
-        qty = item["quantity"]
+    for item in shopify_order.get("line_items", []):
+        # SKU Shopify = productId Nova Engel
+        product_id = digits_only(item.get("sku"))
+        quantity = int(item.get("quantity", 1))
 
-        logging.info(f"🔍 Recherche EAN NovaEngel: {ean}")
-
-        product_id = get_product_id_by_ean(token, ean)
         if not product_id:
-            raise Exception(f"EAN {ean} introuvable chez Nova Engel")
+            raise Exception("Variant SKU (productId Nova Engel) manquant")
 
         lines.append({
-            "productId": product_id,
-            "units": qty
+            "productId": int(product_id),
+            "units": quantity
         })
 
-    shipping = shopify_order["shipping_address"]
+    if not lines:
+        raise Exception("Aucune ligne produit valide")
 
-    order_payload = [{
-        "orderNumber": str(shopify_order["name"]).replace("#", "").zfill(10),
-        "carrierNotes": "",
-        "valoration": 0,
+    shipping = shopify_order.get("shipping_address") or {}
+
+    payload = [{
+        "orderNumber": digits_only(shopify_order.get("name"))[:15] or "1",
         "lines": lines,
-        "name": shipping["first_name"],
-        "secondName": shipping["last_name"],
-        "telephone": "",
-        "mobile": "",
-        "street": shipping["address1"],
-        "city": shipping["city"],
+        "name": shipping.get("first_name"),
+        "secondName": shipping.get("last_name"),
+        "street": shipping.get("address1"),
+        "city": shipping.get("city"),
         "county": shipping.get("province", ""),
-        "postalCode": shipping["zip"],
-        "country": shipping["country_code"]
+        "postalCode": shipping.get("zip"),
+        "country": shipping.get("country_code"),
+        "telephone": shipping.get("phone")
     }]
 
-    url = f"{NOVA_BASE_URL}/orders/sendv2/{token}"
-    r = requests.post(url, json=order_payload, timeout=30)
+    logger.info(f"📤 Envoi vers Nova Engel: {payload}")
+
+    r = requests.post(
+        f"{NOVA_BASE_URL}/orders/sendv2/{token}",
+        json=payload,
+        timeout=30
+    )
     r.raise_for_status()
 
-    logging.info("✅ Commande envoyée à Nova Engel")
-    return r.json()
+    logger.info("✅ Commande envoyée à Nova Engel")
