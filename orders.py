@@ -3,45 +3,45 @@ import logging
 import os
 
 # --------------------------------------------------
-# CONFIG
+# CONFIG FIXE
 # --------------------------------------------------
 NOVA_BASE_URL = "https://drop.novaengel.com/api"
-NOVA_USER = os.environ.get("NOVA_USER")
-NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
 LANG = "fr"
+session = requests.Session()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # --------------------------------------------------
 # LOGIN NOVA ENGEL
 # --------------------------------------------------
 def nova_login():
-    url = f"{NOVA_BASE_URL}/login"
-    payload = {
-        "user": NOVA_USER,
-        "password": NOVA_PASSWORD
-    }
+    NOVA_USER = os.environ.get("NOVA_USER")
+    NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
 
-    r = requests.post(url, json=payload, timeout=30)
+    if not NOVA_USER or not NOVA_PASSWORD:
+        raise Exception(f"NOVA_USER ou NOVA_PASSWORD non définis (NOVA_USER={NOVA_USER}, NOVA_PASSWORD={'***' if NOVA_PASSWORD else None})")
+
+    url = f"{NOVA_BASE_URL}/login"
+    payload = {"user": NOVA_USER, "password": NOVA_PASSWORD}
+
+    r = session.post(url, json=payload, timeout=30)
     r.raise_for_status()
+
+    logging.info(f"Response Nova Engel login: {r.text}")
 
     token = r.json().get("Token") or r.json().get("token")
     if not token:
-        raise Exception("Token Nova Engel non reçu")
+        raise Exception(f"Token Nova Engel non reçu. Response={r.text}")
 
     logging.info("🔑 Token Nova Engel obtenu")
     return token
-
 
 # --------------------------------------------------
 # GET PRODUCT ID BY EAN (SKU)
 # --------------------------------------------------
 def get_product_id_by_ean(token, ean):
     url = f"{NOVA_BASE_URL}/products/availables/{token}/{LANG}"
-    r = requests.get(url, timeout=60)
+    r = session.get(url, timeout=60)
     r.raise_for_status()
 
     for p in r.json():
@@ -51,13 +51,11 @@ def get_product_id_by_ean(token, ean):
 
     raise Exception(f"EAN {ean} introuvable chez Nova Engel")
 
-
 # --------------------------------------------------
 # SEND ORDER TO NOVA ENGEL
 # --------------------------------------------------
 def send_order_to_novaengel(shopify_order):
     token = nova_login()
-
     lines = []
 
     for item in shopify_order.get("line_items", []):
@@ -99,7 +97,7 @@ def send_order_to_novaengel(shopify_order):
     logging.info(f"📤 Payload envoyé à Nova Engel: {payload}")
 
     url = f"{NOVA_BASE_URL}/orders/sendv2/{token}"
-    r = requests.post(url, json=payload, timeout=60)
+    r = session.post(url, json=payload, timeout=60)
     r.raise_for_status()
 
     logging.info(f"✅ Commande {payload[0]['orderNumber']} envoyée à Nova Engel")
