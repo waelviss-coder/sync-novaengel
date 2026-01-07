@@ -3,7 +3,13 @@ import os
 import logging
 import re
 
-logging.basicConfig(level=logging.INFO)
+# LOG POUR CONFIRMER QUE CE FICHIER EST BIEN CHARGÉ
+print("NEW ORDERS.PY LOADED – SKU = PRODUCT ID")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 logger = logging.getLogger(_name_)
 
 NOVA_USER = os.environ.get("NOVA_USER")
@@ -23,7 +29,7 @@ def get_novaengel_token():
 
     token = r.json().get("Token")
     if not token:
-        raise Exception("Token Nova Engel manquant")
+        raise Exception("Nova Engel token missing")
 
     return token
 
@@ -32,7 +38,7 @@ def only_digits(value):
     return re.sub(r"\D", "", str(value or ""))
 
 def numeric_order_number(name):
-    # Nova Engel: numérique, max 15 caractères
+    # Nova Engel exige un numéro NUMÉRIQUE (max 15)
     return only_digits(name)[:15] or "1"
 
 # ================= SEND ORDER =================
@@ -44,11 +50,11 @@ def send_order_to_novaengel(order):
     items = []
 
     for item in order.get("line_items", []):
-        # 🔴 SKU = ID Nova Engel (PAS EAN)
+        # 🔴 SKU = productId Nova Engel
         product_id = only_digits(item.get("sku"))
 
         if not product_id:
-            raise Exception("Variant SKU (productId Nova Engel) manquant")
+            raise Exception("Variant SKU (Nova Engel productId) missing")
 
         items.append({
             "productId": int(product_id),
@@ -56,7 +62,7 @@ def send_order_to_novaengel(order):
         })
 
     if not items:
-        raise Exception("Aucune ligne produit valide")
+        raise Exception("No valid items in order")
 
     shipping = order.get("shipping_address") or {}
 
@@ -73,7 +79,7 @@ def send_order_to_novaengel(order):
         "lines": items
     }]
 
-    logger.info(f"📤 Payload Nova Engel : {payload}")
+    logger.info(f"📤 Sending to Nova Engel: {payload}")
 
     r = requests.post(
         f"https://drop.novaengel.com/api/orders/sendv2/{token}",

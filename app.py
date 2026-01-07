@@ -22,7 +22,7 @@ app = Flask(_name_)
 
 @app.route("/")
 def home():
-    return "Nova Engel Order Sync – OK"
+    return "Nova Engel Order Sync – RUNNING"
 
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
@@ -31,7 +31,7 @@ def shopify_order_created():
 
         logger.info(f"🛒 Order received: {order.get('name')}")
 
-        # On répond vite à Shopify
+        # Thread pour répondre immédiatement à Shopify
         threading.Thread(
             target=send_order_to_novaengel,
             args=(order,),
@@ -41,7 +41,7 @@ def shopify_order_created():
         return jsonify({"status": "queued"}), 200
 
     except Exception as e:
-        logger.exception("Webhook error")
+        logger.exception("❌ Webhook error")
         return jsonify({"error": str(e)}), 500
 
 # ================= START =================
