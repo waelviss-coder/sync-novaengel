@@ -1,7 +1,7 @@
 from flask import Flask, jsonify, request
 import threading
-import os
 import logging
+import os
 
 from orders import send_order_to_novaengel
 
@@ -22,22 +22,23 @@ app = Flask(_name_)
 
 @app.route("/")
 def home():
-    return "Nova Engel Sync – OK"
+    return "Nova Engel Order Sync – OK"
 
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
     try:
         order = request.get_json(force=True)
 
-        logger.info(f"🛒 Commande Shopify reçue : {order.get('name')}")
+        logger.info(f"🛒 Commande reçue : {order.get('name')}")
 
+        # Thread pour ne jamais bloquer Shopify
         threading.Thread(
             target=send_order_to_novaengel,
             args=(order,),
             daemon=True
         ).start()
 
-        return jsonify({"status": "order sent to Nova Engel"}), 200
+        return jsonify({"status": "order queued"}), 200
 
     except Exception as e:
         logger.exception("❌ Erreur webhook Shopify")
@@ -47,6 +48,5 @@ def shopify_order_created():
 if _name_ == "_main_":
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-        threaded=True
+        port=int(os.environ.get("PORT", 8080))
     )

@@ -2,14 +2,9 @@ import requests
 import os
 import logging
 
-# ================= LOGGER =================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(_name_)
 
-# ================= CONFIG =================
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
@@ -17,17 +12,11 @@ NOVA_PASS = os.environ.get("NOVA_PASS")
 def get_novaengel_token():
     r = requests.post(
         "https://drop.novaengel.com/api/login",
-        json={
-            "user": NOVA_USER,
-            "password": NOVA_PASS
-        },
-        timeout=60
+        json={"user": NOVA_USER, "password": NOVA_PASS},
+        timeout=30
     )
     r.raise_for_status()
-    token = r.json().get("Token")
-    if not token:
-        raise Exception("Token Nova Engel manquant")
-    return token
+    return r.json().get("Token")
 
 # ================= PRODUCTS =================
 def get_novaengel_products(token):
@@ -45,36 +34,35 @@ def send_order_to_novaengel(order):
     token = get_novaengel_token()
     products = get_novaengel_products(token)
 
-    # 🔁 Mapping EAN -> Reference Nova Engel
-    ean_to_reference = {
-        str(p.get("EAN")).strip(): str(p.get("Reference")).strip()
+    # 🔁 Mapping EAN -> Id Nova Engel
+    ean_to_id = {
+        str(p.get("EAN")).strip(): p.get("Id")
         for p in products
-        if p.get("EAN") and p.get("Reference")
+        if p.get("EAN") and p.get("Id")
     }
 
     items = []
 
     for item in order.get("line_items", []):
-        # Shopify SKU = EAN dans ton cas
-        raw_sku = item.get("sku", "")
-        ean = raw_sku.replace("'", "").strip()
+        # Shopify SKU contient l’EAN
+        ean = (item.get("sku") or "").replace("'", "").strip()
 
         if not ean:
             continue
 
-        reference = ean_to_reference.get(ean)
+        nova_id = ean_to_id.get(ean)
 
-        if not reference:
+        if not nova_id:
             raise Exception(f"EAN {ean} introuvable chez Nova Engel")
 
         items.append({
-            "Reference": reference,
+            "Id": nova_id,
             "Quantity": item["quantity"],
             "Price": float(item["price"])
         })
 
     if not items:
-        logger.warning("⚠ Aucun article valide → commande ignorée")
+        logger.warning("⚠ Aucun produit valide → commande ignorée")
         return
 
     shipping = order.get("shipping_address") or {}
@@ -97,7 +85,7 @@ def send_order_to_novaengel(order):
         "Items": items
     }
 
-    logger.info(f"📤 Payload Nova Engel : {payload}")
+    logger.info(f"📤 Envoi Nova Engel : {payload}")
 
     r = requests.post(
         f"https://drop.novaengel.com/api/order/create/{token}",
