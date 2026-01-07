@@ -1,6 +1,6 @@
 import requests
-import logging
 import os
+import logging
 
 NOVA_BASE_URL = "https://drop.novaengel.com/api"
 NOVA_USER = os.environ.get("NOVA_USER")
