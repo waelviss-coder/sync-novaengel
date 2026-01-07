@@ -4,15 +4,12 @@ import os
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
-# ====================== AUTH ======================
+# ================= AUTH =================
 
 def get_novaengel_token():
     r = requests.post(
         "https://drop.novaengel.com/api/login",
-        json={
-            "user": NOVA_USER,
-            "password": NOVA_PASS
-        },
+        json={"user": NOVA_USER, "password": NOVA_PASS},
         timeout=30
     )
     r.raise_for_status()
@@ -21,28 +18,33 @@ def get_novaengel_token():
         raise Exception("Token Nova Engel introuvable")
     return token
 
-# ====================== STOCK ======================
+# ================= STOCK + PRICE =================
 
-def get_novaengel_stock_map(token):
+def get_novaengel_catalog(token):
     r = requests.get(
         f"https://drop.novaengel.com/api/stock/update/{token}",
         timeout=60
     )
     r.raise_for_status()
-    data = r.json()
-    return {
-        str(item["Id"]).strip(): item.get("Stock", 0)
-        for item in data if item.get("Id")
-    }
+
+    catalog = {}
+    for item in r.json():
+        if not item.get("Id"):
+            continue
+        catalog[str(item["Id"]).strip()] = {
+            "stock": int(item.get("Stock", 0)),
+            "price": float(item.get("Price", 0))
+        }
+    return catalog
 
 def clean_sku(sku):
-    return sku.strip().replace(" ", "").replace("'", "") if sku else ""
+    return sku.strip().replace("'", "").replace(" ", "") if sku else ""
 
-# ====================== ORDER SEND ======================
+# ================= SEND ORDER =================
 
 def send_order_to_novaengel(order):
     token = get_novaengel_token()
-    stock_map = get_novaengel_stock_map(token)
+    catalog = get_novaengel_catalog(token)
 
     items = []
 
@@ -50,21 +52,25 @@ def send_order_to_novaengel(order):
         sku = clean_sku(item.get("sku"))
         qty = int(item.get("quantity", 0))
 
-        price = float(
-            item.get("price")
-            or item.get("price_set", {})
-                .get("shop_money", {})
-                .get("amount", 0)
-        )
+        nova_item = catalog.get(sku)
 
-        print("🧾 Item reçu:", sku, qty, price)
+        print("🧾 Shopify item:", sku, qty)
 
-        if not sku or sku not in stock_map:
-            print(f"⚠ SKU ignoré: {sku}")
+        if not nova_item:
+            print(f"⛔ SKU {sku} absent chez Nova")
             continue
 
-        if qty <= 0 or price <= 0:
-            print("❌ Item invalide")
+        if nova_item["stock"] <= 0:
+            print(f"⛔ Stock Nova insuffisant pour {sku}")
+            continue
+
+        if qty <= 0:
+            continue
+
+        price = nova_item["price"]
+
+        if price <= 0:
+            print(f"⛔ Prix Nova invalide pour {sku}")
             continue
 
         items.append({
@@ -74,8 +80,7 @@ def send_order_to_novaengel(order):
         })
 
     if not items:
-        print("❌ Aucun item valide → commande ignorée")
-        return {"status": "no items sent"}
+        return {"status": "no valid items sent"}
 
     shipping = order.get("shipping_address") or {}
 
@@ -83,7 +88,7 @@ def send_order_to_novaengel(order):
         "OrderNumber": order.get("name", "TEST-UNKNOWN"),
         "Date": order.get("created_at"),
         "Currency": order.get("currency", "EUR"),
-        "Total": float(order.get("total_price", 0)),
+        "Total": round(sum(i["Price"] * i["Quantity"] for i in items), 2),
         "Customer": {
             "FirstName": shipping.get("first_name", ""),
             "LastName": shipping.get("last_name", ""),
@@ -105,6 +110,6 @@ def send_order_to_novaengel(order):
         timeout=30
     )
 
-    print("📨 Réponse Nova Engel:", r.status_code, r.text)
+    print("📨 Réponse Nova:", r.status_code, r.text)
     r.raise_for_status()
     return r.json()
