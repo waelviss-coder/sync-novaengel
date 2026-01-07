@@ -11,8 +11,6 @@ from orders import send_order_to_novaengel
 # ====================== CONFIG ======================
 SHOPIFY_STORE = "plureals.myshopify.com"
 SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN")
-NOVA_USER = os.environ.get("NOVA_USER")
-NOVA_PASS = os.environ.get("NOVA_PASS")
 SECRET_KEY = os.environ.get("SECRET_KEY", "pl0reals")
 
 app = Flask(__name__)
@@ -23,7 +21,7 @@ session = requests.Session()
 def shopify_request(method, url, **kwargs):
     attempt = 0
     while True:
-        time.sleep(0.7)  # on reste très tranquille
+        time.sleep(0.7)
         try:
             r = session.request(method, url, **kwargs, timeout=30)
             if r.status_code == 429:
@@ -45,8 +43,9 @@ def shopify_request(method, url, **kwargs):
             print(f"Erreur réseau (tentative {attempt}/8) → attente {wait}s : {e}")
             time.sleep(wait)
 
-# ====================== NOVA ENGEL ======================
+# ====================== NOVA ENGEL STOCK ======================
 def get_novaengel_token():
+    from orders import NOVA_USER, NOVA_PASS
     r = session.post(
         "https://drop.novaengel.com/api/login",
         json={"user": NOVA_USER, "password": NOVA_PASS},
@@ -110,7 +109,7 @@ def sync_all_products():
 
         for product in shopify:
             for variant in product["variants"]:
-                sku = variant["sku"].strip().replace("'", "")
+                sku = variant["sku"].strip()
                 if sku in nova_map and nova_map[sku] != variant["inventory_quantity"]:
                     update_shopify_stock(variant["inventory_item_id"], location_id, nova_map[sku])
                     print(f"MISE À JOUR → {product['title']} | SKU {sku} : {variant['inventory_quantity']} → {nova_map[sku]}")
@@ -143,7 +142,7 @@ def home():
 def shopify_order_created():
     try:
         order = request.get_json(force=True)
-        send_order_to_novaengel(order)
+        send_order_to_novaengel(order)  # <-- Envoie avec SKU = Id
         return jsonify({"status": "order sent to NovaEngel"}), 200
     except Exception as e:
         logging.exception("Erreur webhook commande")
