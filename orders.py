@@ -1,100 +1,96 @@
 import requests
 import os
+import time
 import logging
 
-# ================= CONFIG =================
-BASE_URL = "https://drop.novaengel.com/api"
+# =========================== CONFIG ===========================
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
-# ================= LOGGER =================
+# =========================== LOGGER ===========================
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s"
+    format='%(asctime)s [%(levelname)s] %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# ================= TOKEN =================
+# =========================== TOKEN NOVA ENGEL ===========================
 def get_novaengel_token():
-    r = requests.post(
-        f"{BASE_URL}/login",
-        json={"user": NOVA_USER, "password": NOVA_PASS},
-        timeout=30
-    )
-    r.raise_for_status()
-    token = r.json().get("Token")
-    if not token:
-        raise Exception("Token Nova Engel non reçu")
-    return token
+    logger.info("🔑 Tentative d'obtenir le token NovaEngel...")
+    try:
+        r = requests.post(
+            "https://drop.novaengel.com/api/login",
+            json={"user": NOVA_USER, "password": NOVA_PASS},
+            timeout=90
+        )
+        r.raise_for_status()
+        token = r.json().get("Token") or r.json().get("token")
+        if not token:
+            raise Exception("Token NovaEngel manquant")
+        logger.info(f"✅ Token reçu: {token[:6]}...")
+        return token
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Impossible d'obtenir le token NovaEngel: {e}")
+        raise
 
-# ================= STOCK =================
-def get_nova_stock():
+# =========================== STOCK ===========================
+def get_novaengel_stock():
     token = get_novaengel_token()
-    r = requests.get(
-        f"{BASE_URL}/stock/update/{token}",
-        timeout=30
-    )
+    r = requests.get(f"https://drop.novaengel.com/api/stock/update/{token}", timeout=60)
     r.raise_for_status()
     return r.json()
 
-# ================= SEND ORDER =================
+# =========================== ENVOI DE COMMANDE ===========================
 def send_order_to_novaengel(order):
-    logger.info(f"📦 Commande Shopify: {order.get('name')}")
+    logger.info(f"📦 Nouvelle commande reçue: {order.get('name')}")
+    try:
+        token = get_novaengel_token()
+        items = []
+        for item in order.get("line_items", []):
+            if item.get("sku"):
+                items.append({
+                    "Reference": item["sku"],
+                    "Quantity": item["quantity"],
+                    "Price": item["price"]
+                })
+        if not items:
+            logger.warning("⚠ Aucun item valide trouvé dans la commande")
 
-    token = get_novaengel_token()
-    stock = get_nova_stock()
+        payload = {
+            "OrderNumber": order.get("name", f"TEST-{int(time.time())}"),
+            "Date": order.get("created_at"),
+            "Total": order.get("total_price"),
+            "Currency": order.get("currency"),
+            "Customer": {
+                "FirstName": order["shipping_address"]["first_name"],
+                "LastName": order["shipping_address"]["last_name"],
+                "Address": order["shipping_address"]["address1"],
+                "City": order["shipping_address"]["city"],
+                "Zip": order["shipping_address"]["zip"],
+                "Country": order["shipping_address"]["country"],
+                "Phone": order["shipping_address"].get("phone"),
+                "Email": order.get("email")
+            },
+            "Items": items
+        }
+        logger.info(f"📤 Payload à envoyer à NovaEngel: {payload}")
 
-    # MAP : EAN (Shopify SKU) -> productId Nova Engel
-    ean_to_product_id = {}
-    for p in stock:
-        if p.get("Id") and p.get("EAN"):
-            ean_to_product_id[str(p["EAN"]).strip()] = p["Id"]
-
-    lines = []
-    for item in order.get("line_items", []):
-        sku = str(item.get("sku")).replace("'", "").strip()
-        product_id = ean_to_product_id.get(sku)
-
-        if not product_id:
-            logger.error(f"❌ Produit non trouvé chez Nova Engel : {sku}")
-            continue
-
-        lines.append({
-            "productId": product_id,
-            "units": int(item.get("quantity", 1))
-        })
-
-    if not lines:
-        raise Exception("Aucun produit valide à envoyer")
-
-    shipping = order.get("shipping_address", {})
-
-    order_number = "".join(filter(str.isdigit, order.get("name", "")))[:15]
-    if not order_number:
-        raise Exception("orderNumber invalide")
-
-    payload = [{
-        "orderNumber": order_number,
-        "carrierNotes": "Commande Shopify Plureals",
-        "lines": lines,
-        "name": shipping.get("first_name"),
-        "secondName": shipping.get("last_name"),
-        "telephone": shipping.get("phone", ""),
-        "mobile": shipping.get("phone", ""),
-        "street": shipping.get("address1"),
-        "city": shipping.get("city"),
-        "county": shipping.get("province", ""),
-        "postalCode": shipping.get("zip"),
-        "country": shipping.get("country_code")
-    }]
-
-    logger.info(f"📤 Envoi Nova Engel: {payload}")
-
-    r = requests.post(
-        f"{BASE_URL}/orders/sendv2/{token}",
-        json=payload,
-        timeout=60
-    )
-    r.raise_for_status()
-
-    logger.info(f"✅ Commande {order_number} envoyée à Nova Engel")
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    f"https://drop.novaengel.com/api/order/create/{token}",
+                    json=payload,
+                    timeout=90
+                )
+                r.raise_for_status()
+                logger.info(f"✅ Commande {payload['OrderNumber']} envoyée à NovaEngel")
+                logger.info(f"💬 Réponse NovaEngel: {r.text}")
+                break
+            except requests.exceptions.ReadTimeout:
+                logger.warning(f"⚠ Timeout, tentative {attempt+1}/3 dans 5s")
+                time.sleep(5)
+            except requests.exceptions.RequestException as e:
+                logger.error(f"❌ Erreur lors de l'envoi à NovaEngel: {e}")
+                break
+    except Exception as e:
+        logger.exception(f"❌ Échec envoi commande: {e}")
