@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 import threading
 import requests
 import os
@@ -6,10 +6,10 @@ import time
 import atexit
 import logging
 from apscheduler.schedulers.background import BackgroundScheduler
-from orders import send_order_to_novaengel
+from orders import send_order_to_novaengel, get_novaengel_token, get_novaengel_stock
 
-# ---------------- CONFIG ----------------
-SHOPIFY_STORE = "plureals.myshopify.com"
+# ====================== CONFIG ======================
+SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE")
 SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN")
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
@@ -19,7 +19,7 @@ app = Flask(__name__)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 session = requests.Session()
 
-# ---------------- GESTION 429 INFALLIBLE ----------------
+# ====================== GESTION 429 INFALLIBLE ======================
 def shopify_request(method, url, **kwargs):
     attempt = 0
     while True:
@@ -45,22 +45,7 @@ def shopify_request(method, url, **kwargs):
             print(f"Erreur réseau (tentative {attempt}/8) → attente {wait}s : {e}")
             time.sleep(wait)
 
-# ---------------- NOVA ENGEL ----------------
-def get_novaengel_token():
-    r = session.post("https://drop.novaengel.com/api/login", json={"user": NOVA_USER, "password": NOVA_PASS}, timeout=30)
-    r.raise_for_status()
-    token = r.json().get("Token") or r.json().get("token")
-    if not token:
-        raise Exception("Token NovaEngel manquant")
-    return token
-
-def get_novaengel_stock():
-    token = get_novaengel_token()
-    r = session.get(f"https://drop.novaengel.com/api/stock/update/{token}", timeout=60)
-    r.raise_for_status()
-    return r.json()
-
-# ---------------- SHOPIFY ----------------
+# ====================== SHOPIFY ======================
 def get_all_shopify_products():
     products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
@@ -87,17 +72,15 @@ def update_shopify_stock(inventory_item_id, location_id, stock):
     payload = {"location_id": location_id, "inventory_item_id": inventory_item_id, "available": stock}
     shopify_request("POST", url, json=payload, headers=headers)
 
-# ---------------- SYNC ----------------
+# ====================== SYNC ======================
 def sync_all_products():
     print("\nDÉBUT SYNCHRONISATION AUTOMATIQUE")
     try:
         nova = get_novaengel_stock()
         shopify = get_all_shopify_products()
         location_id = get_shopify_location_id()
-
         nova_map = {str(item.get("Id","")).strip(): item.get("Stock",0) for item in nova if item.get("Id")}
         modified = 0
-
         for product in shopify:
             for variant in product["variants"]:
                 sku = variant["sku"].strip().replace("'", "")
@@ -105,19 +88,18 @@ def sync_all_products():
                     update_shopify_stock(variant["inventory_item_id"], location_id, nova_map[sku])
                     print(f"MISE À JOUR → {product['title']} | SKU {sku} : {variant['inventory_quantity']} → {nova_map[sku]}")
                     modified += 1
-
         print(f"SYNCHRONISATION TERMINÉE → {modified} produit(s) mis à jour\n" if modified else "Aucune modification\n")
     except Exception as e:
         print(f"ERREUR FATALE : {e}\n")
         raise
 
-# ---------------- SCHÉDULER ----------------
+# ====================== SCHÉDULER ======================
 scheduler = BackgroundScheduler(timezone="Europe/Paris")
 scheduler.add_job(func=sync_all_products, trigger="interval", minutes=60, id="sync_job")
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown(wait=False))
 
-# ---------------- ROUTES ----------------
+# ====================== ROUTES ======================
 @app.route("/sync")
 def manual_sync():
     if request.args.get("key") != SECRET_KEY:
@@ -141,7 +123,7 @@ def shopify_order_created():
         logging.exception("Erreur webhook commande")
         return jsonify({"error": str(e)}), 500
 
-# ---------------- START ----------------
+# ====================== START ======================
 if __name__ == "__main__":
     print("Démarrage – première sync dans 10 secondes…")
     time.sleep(10)
