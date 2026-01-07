@@ -3,19 +3,18 @@ import os
 import logging
 import re
 
-# 🔥 LOG POUR CONFIRMER QUE CE FICHIER EST CHARGÉ
-print("🔥 NEW ORDERS.PY LOADED – SKU = PRODUCT ID 🔥")
+print("🔥 ORDERS.PY LOADED – RENDER SAFE VERSION 🔥")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
-
-# ✅ CORRECTION ICI
 logger = logging.getLogger(_name_)
 
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
+
+# ================= NOVA ENGEL =================
 
 def get_novaengel_token():
     r = requests.post(
@@ -24,10 +23,7 @@ def get_novaengel_token():
         timeout=30
     )
     r.raise_for_status()
-    token = r.json().get("Token")
-    if not token:
-        raise Exception("Nova Engel token missing")
-    return token
+    return r.json()["Token"]
 
 def only_digits(value):
     return re.sub(r"\D", "", str(value or ""))
@@ -35,19 +31,19 @@ def only_digits(value):
 def numeric_order_number(name):
     return only_digits(name)[:15] or "1"
 
+# ================= SEND ORDER =================
+
 def send_order_to_novaengel(order):
     logger.info(f"📦 Processing order {order.get('name')}")
 
     token = get_novaengel_token()
 
     items = []
-
     for item in order.get("line_items", []):
-        # SKU = Nova Engel productId
         product_id = only_digits(item.get("sku"))
 
         if not product_id:
-            raise Exception("Variant SKU (Nova Engel productId) missing")
+            raise Exception("Variant SKU (Nova Engel productId) manquant")
 
         items.append({
             "productId": int(product_id),
@@ -55,7 +51,7 @@ def send_order_to_novaengel(order):
         })
 
     if not items:
-        raise Exception("No valid items in order")
+        raise Exception("Aucun produit valide dans la commande")
 
     shipping = order.get("shipping_address") or {}
 
@@ -81,4 +77,4 @@ def send_order_to_novaengel(order):
     )
     r.raise_for_status()
 
-    logger.info(f"✅ Order {order.get('name')} sent to Nova Engel")
+    logger.info("✅ Order sent to Nova Engel")
