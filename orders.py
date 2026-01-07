@@ -3,9 +3,9 @@ import os
 import logging
 
 # ================= CONFIG =================
+BASE_URL = "https://drop.novaengel.com/api"
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
-BASE_URL = "https://drop.novaengel.com/api"
 
 # ================= LOGGER =================
 logging.basicConfig(
@@ -14,52 +14,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ================= AUTH =================
+# ================= TOKEN =================
 def get_novaengel_token():
     r = requests.post(
         f"{BASE_URL}/login",
         json={"user": NOVA_USER, "password": NOVA_PASS},
-        timeout=60
+        timeout=30
     )
     r.raise_for_status()
-
     token = r.json().get("Token")
     if not token:
         raise Exception("Token Nova Engel non reçu")
-
     return token
 
-# ================= PRODUCTS =================
-def get_nova_products():
+# ================= STOCK =================
+def get_nova_stock():
     token = get_novaengel_token()
     r = requests.get(
-        f"{BASE_URL}/products/availables/{token}/fr",
-        timeout=90
+        f"{BASE_URL}/stock/update/{token}",
+        timeout=30
     )
     r.raise_for_status()
     return r.json()
 
 # ================= SEND ORDER =================
 def send_order_to_novaengel(order):
-    logger.info(f"📦 Commande Shopify reçue: {order.get('name')}")
+    logger.info(f"📦 Commande Shopify: {order.get('name')}")
 
     token = get_novaengel_token()
-    products = get_nova_products()
+    stock = get_nova_stock()
 
-    # MAP EAN -> PRODUCT ID
+    # MAP : EAN (Shopify SKU) -> productId Nova Engel
     ean_to_product_id = {}
-    for p in products:
-        for ean in p.get("EANs", []):
-            ean_to_product_id[str(ean).strip()] = p["Id"]
+    for p in stock:
+        if p.get("Id") and p.get("EAN"):
+            ean_to_product_id[str(p["EAN"]).strip()] = p["Id"]
 
-    # BUILD ORDER LINES
     lines = []
     for item in order.get("line_items", []):
         sku = str(item.get("sku")).replace("'", "").strip()
         product_id = ean_to_product_id.get(sku)
 
         if not product_id:
-            logger.error(f"❌ SKU {sku} introuvable chez Nova Engel")
+            logger.error(f"❌ Produit non trouvé chez Nova Engel : {sku}")
             continue
 
         lines.append({
@@ -68,15 +65,13 @@ def send_order_to_novaengel(order):
         })
 
     if not lines:
-        raise Exception("Aucun produit valide à envoyer à Nova Engel")
+        raise Exception("Aucun produit valide à envoyer")
 
-    shipping = order.get("shipping_address") or {}
+    shipping = order.get("shipping_address", {})
 
-    # ORDER NUMBER NUMERIC (MAX 15)
     order_number = "".join(filter(str.isdigit, order.get("name", "")))[:15]
-
     if not order_number:
-        raise Exception("orderNumber invalide (doit être numérique)")
+        raise Exception("orderNumber invalide")
 
     payload = [{
         "orderNumber": order_number,
@@ -93,12 +88,12 @@ def send_order_to_novaengel(order):
         "country": shipping.get("country_code")
     }]
 
-    logger.info(f"📤 Payload envoyé à Nova Engel: {payload}")
+    logger.info(f"📤 Envoi Nova Engel: {payload}")
 
     r = requests.post(
         f"{BASE_URL}/orders/sendv2/{token}",
         json=payload,
-        timeout=90
+        timeout=60
     )
     r.raise_for_status()
 
