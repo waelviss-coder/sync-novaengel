@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, request, jsonify
 import threading
 import logging
 import os
@@ -6,7 +6,7 @@ import os
 from orders import send_order_to_novaengel
 
 # ================= CONFIG =================
-SECRET_KEY = os.environ.get("SECRET_KEY", "pl0reals")
+PORT = int(os.environ.get("PORT", 8080))
 
 # ================= LOGGER =================
 logging.basicConfig(
@@ -29,9 +29,9 @@ def shopify_order_created():
     try:
         order = request.get_json(force=True)
 
-        logger.info(f"🛒 Commande reçue : {order.get('name')}")
+        logger.info(f"🛒 Shopify order received: {order.get('name')}")
 
-        # Thread pour ne jamais bloquer Shopify
+        # Thread = Shopify reçoit 200 immédiatement
         threading.Thread(
             target=send_order_to_novaengel,
             args=(order,),
@@ -41,12 +41,9 @@ def shopify_order_created():
         return jsonify({"status": "order queued"}), 200
 
     except Exception as e:
-        logger.exception("❌ Erreur webhook Shopify")
+        logger.exception("❌ Webhook error")
         return jsonify({"error": str(e)}), 500
 
 # ================= START =================
 if _name_ == "_main_":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080))
-    )
+    app.run(host="0.0.0.0", port=PORT)
