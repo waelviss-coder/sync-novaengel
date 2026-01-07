@@ -3,45 +3,38 @@ import os
 import logging
 import re
 
-# LOG POUR CONFIRMER QUE CE FICHIER EST BIEN CHARGÉ
-print("NEW ORDERS.PY LOADED – SKU = PRODUCT ID")
+# 🔥 LOG POUR CONFIRMER QUE CE FICHIER EST CHARGÉ
+print("🔥 NEW ORDERS.PY LOADED – SKU = PRODUCT ID 🔥")
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
+
+# ✅ CORRECTION ICI
 logger = logging.getLogger(_name_)
 
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
-# ================= AUTH =================
 def get_novaengel_token():
     r = requests.post(
         "https://drop.novaengel.com/api/login",
-        json={
-            "user": NOVA_USER,
-            "password": NOVA_PASS
-        },
+        json={"user": NOVA_USER, "password": NOVA_PASS},
         timeout=30
     )
     r.raise_for_status()
-
     token = r.json().get("Token")
     if not token:
         raise Exception("Nova Engel token missing")
-
     return token
 
-# ================= UTILS =================
 def only_digits(value):
     return re.sub(r"\D", "", str(value or ""))
 
 def numeric_order_number(name):
-    # Nova Engel exige un numéro NUMÉRIQUE (max 15)
     return only_digits(name)[:15] or "1"
 
-# ================= SEND ORDER =================
 def send_order_to_novaengel(order):
     logger.info(f"📦 Processing order {order.get('name')}")
 
@@ -50,7 +43,7 @@ def send_order_to_novaengel(order):
     items = []
 
     for item in order.get("line_items", []):
-        # 🔴 SKU = productId Nova Engel
+        # SKU = Nova Engel productId
         product_id = only_digits(item.get("sku"))
 
         if not product_id:
