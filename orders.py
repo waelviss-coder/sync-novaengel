@@ -13,25 +13,27 @@ NOVA_PASS = os.environ.get("NOVA_PASS")
 def get_novaengel_token():
     r = requests.post(
         "https://drop.novaengel.com/api/login",
-        json={"user": NOVA_USER, "password": NOVA_PASS},
+        json={
+            "user": NOVA_USER,
+            "password": NOVA_PASS
+        },
         timeout=30
     )
     r.raise_for_status()
+
     token = r.json().get("Token")
     if not token:
-        raise Exception("Nova Engel token missing")
+        raise Exception("Token Nova Engel manquant")
+
     return token
 
 # ================= UTILS =================
-def clean_numeric(value):
-    """Supprime tout sauf chiffres"""
+def only_digits(value):
     return re.sub(r"\D", "", str(value or ""))
 
-def numeric_order_number(shopify_name):
-    """
-    Nova Engel exige un numéro NUMÉRIQUE (max 15)
-    """
-    return clean_numeric(shopify_name)[:15] or "1"
+def numeric_order_number(name):
+    # Nova Engel: numérique, max 15 caractères
+    return only_digits(name)[:15] or "1"
 
 # ================= SEND ORDER =================
 def send_order_to_novaengel(order):
@@ -42,19 +44,19 @@ def send_order_to_novaengel(order):
     items = []
 
     for item in order.get("line_items", []):
-        # SKU = Id Nova Engel
-        product_id = clean_numeric(item.get("sku"))
+        # 🔴 SKU = ID Nova Engel (PAS EAN)
+        product_id = only_digits(item.get("sku"))
 
         if not product_id:
-            raise Exception("SKU (Nova Engel Id) manquant")
+            raise Exception("Variant SKU (productId Nova Engel) manquant")
 
         items.append({
             "productId": int(product_id),
-            "units": item["quantity"]
+            "units": int(item.get("quantity", 1))
         })
 
     if not items:
-        raise Exception("Aucun produit valide dans la commande")
+        raise Exception("Aucune ligne produit valide")
 
     shipping = order.get("shipping_address") or {}
 
@@ -71,7 +73,7 @@ def send_order_to_novaengel(order):
         "lines": items
     }]
 
-    logger.info(f"📤 Sending to Nova Engel: {payload}")
+    logger.info(f"📤 Payload Nova Engel : {payload}")
 
     r = requests.post(
         f"https://drop.novaengel.com/api/orders/sendv2/{token}",
