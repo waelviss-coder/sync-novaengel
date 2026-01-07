@@ -17,7 +17,7 @@ app = Flask(__name__)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 session = requests.Session()
 
-# ====================== GESTION 429 INFALLIBLE ======================
+# ====================== GESTION 429 ======================
 def shopify_request(method, url, **kwargs):
     attempt = 0
     while True:
@@ -104,12 +104,12 @@ def sync_all_products():
         nova = get_novaengel_stock()
         shopify = get_all_shopify_products()
         location_id = get_shopify_location_id()
-        nova_map = {str(item.get("Id","")).strip(): item.get("Stock",0) for item in nova if item.get("Id")}
+        nova_map = {str(item.get("Id","")).strip().replace("'", ""): item.get("Stock",0) for item in nova if item.get("Id")}
         modified = 0
 
         for product in shopify:
             for variant in product["variants"]:
-                sku = variant["sku"].strip()
+                sku = variant["sku"].strip().replace("'", "")
                 if sku in nova_map and nova_map[sku] != variant["inventory_quantity"]:
                     update_shopify_stock(variant["inventory_item_id"], location_id, nova_map[sku])
                     print(f"MISE À JOUR → {product['title']} | SKU {sku} : {variant['inventory_quantity']} → {nova_map[sku]}")
@@ -142,7 +142,7 @@ def home():
 def shopify_order_created():
     try:
         order = request.get_json(force=True)
-        send_order_to_novaengel(order)  # <-- Envoie avec SKU = Id
+        send_order_to_novaengel(order)  # <-- SKU nettoyé et prix géré
         return jsonify({"status": "order sent to NovaEngel"}), 200
     except Exception as e:
         logging.exception("Erreur webhook commande")

@@ -25,43 +25,49 @@ def send_order_to_novaengel(order):
     """
     token = get_novaengel_token()
 
-    # Préparer les items pour Nova Engel
+    # Préparer les items
     items = []
     for item in order.get("line_items", []):
         sku = item.get("sku")
         if not sku:
             continue  # ignorer si pas de SKU
+        sku = sku.strip().replace("'", "")  # nettoyer les apostrophes
+        price = float(item.get("price", 0))
+        qty = int(item.get("quantity", 0))
+        if qty <= 0:
+            continue  # ignorer si quantité invalide
         items.append({
-            "Id": sku.strip(),           # <-- Ici on utilise l'ID Nova Engel = SKU Shopify
-            "Quantity": item["quantity"],
-            "Price": float(item["price"])
+            "Id": sku,
+            "Quantity": qty,
+            "Price": price
         })
 
-    # Préparer la commande complète
+    # Infos client
     shipping = order.get("shipping_address") or {}
     payload = {
-        "OrderNumber": order["name"],
-        "Date": order["created_at"],
-        "Currency": order["currency"],
-        "Total": float(order["total_price"]),
+        "OrderNumber": order.get("name", "TEST-UNKNOWN"),
+        "Date": order.get("created_at", "2026-01-07T12:00:00"),
+        "Currency": order.get("currency", "EUR"),
+        "Total": float(order.get("total_price", 0)),
         "Customer": {
-            "FirstName": shipping.get("first_name"),
-            "LastName": shipping.get("last_name"),
-            "Address": shipping.get("address1"),
-            "City": shipping.get("city"),
-            "Zip": shipping.get("zip"),
-            "Country": shipping.get("country"),
-            "Phone": shipping.get("phone"),
-            "Email": order.get("email")
+            "FirstName": shipping.get("first_name", ""),
+            "LastName": shipping.get("last_name", ""),
+            "Address": shipping.get("address1", ""),
+            "City": shipping.get("city", ""),
+            "Zip": shipping.get("zip", ""),
+            "Country": shipping.get("country", ""),
+            "Phone": shipping.get("phone", ""),
+            "Email": order.get("email", "")
         },
         "Items": items
     }
 
-    # Envoyer la commande à Nova Engel
+    # Envoyer la commande et loguer la réponse
     r = requests.post(
         f"https://drop.novaengel.com/api/order/create/{token}",
         json=payload,
         timeout=30
     )
+    print("Nova Engel response:", r.status_code, r.text)
     r.raise_for_status()
     return r.json()
