@@ -29,19 +29,19 @@ def shopify_order_created():
     try:
         order = request.get_json(force=True)
 
-        logger.info(f"🛒 Shopify order received: {order.get('name')}")
+        logger.info(f"🛒 Order received: {order.get('name')}")
 
-        # Thread = Shopify reçoit 200 immédiatement
+        # On répond vite à Shopify
         threading.Thread(
             target=send_order_to_novaengel,
             args=(order,),
             daemon=True
         ).start()
 
-        return jsonify({"status": "order queued"}), 200
+        return jsonify({"status": "queued"}), 200
 
     except Exception as e:
-        logger.exception("❌ Webhook error")
+        logger.exception("Webhook error")
         return jsonify({"error": str(e)}), 500
 
 # ================= START =================
