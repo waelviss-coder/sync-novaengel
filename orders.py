@@ -2,28 +2,23 @@ import requests
 import logging
 import os
 
-# --------------------------------------------------
-# CONFIG FIXE
-# --------------------------------------------------
+# ---------------- CONFIG ----------------
 NOVA_BASE_URL = "https://drop.novaengel.com/api"
 LANG = "fr"
 session = requests.Session()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# --------------------------------------------------
-# LOGIN NOVA ENGEL
-# --------------------------------------------------
+# ---------------- LOGIN NOVA ENGEL ----------------
 def nova_login():
     NOVA_USER = os.environ.get("NOVA_USER")
-    NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
+    NOVA_PASS = os.environ.get("NOVA_PASS")
 
-    if not NOVA_USER or not NOVA_PASSWORD:
-        raise Exception(f"NOVA_USER ou NOVA_PASSWORD non définis (NOVA_USER={NOVA_USER}, NOVA_PASSWORD={'***' if NOVA_PASSWORD else None})")
+    if not NOVA_USER or not NOVA_PASS:
+        raise Exception(f"NOVA_USER ou NOVA_PASS non définis (NOVA_USER={NOVA_USER}, NOVA_PASS={'***' if NOVA_PASS else None})")
 
     url = f"{NOVA_BASE_URL}/login"
-    payload = {"user": NOVA_USER, "password": NOVA_PASSWORD}
-
+    payload = {"user": NOVA_USER, "password": NOVA_PASS}
     r = session.post(url, json=payload, timeout=30)
     r.raise_for_status()
 
@@ -36,9 +31,7 @@ def nova_login():
     logging.info("🔑 Token Nova Engel obtenu")
     return token
 
-# --------------------------------------------------
-# GET PRODUCT ID BY EAN (SKU)
-# --------------------------------------------------
+# ---------------- GET PRODUCT ID BY EAN (SKU) ----------------
 def get_product_id_by_ean(token, ean):
     url = f"{NOVA_BASE_URL}/products/availables/{token}/{LANG}"
     r = session.get(url, timeout=60)
@@ -51,9 +44,7 @@ def get_product_id_by_ean(token, ean):
 
     raise Exception(f"EAN {ean} introuvable chez Nova Engel")
 
-# --------------------------------------------------
-# SEND ORDER TO NOVA ENGEL
-# --------------------------------------------------
+# ---------------- SEND ORDER ----------------
 def send_order_to_novaengel(shopify_order):
     token = nova_login()
     lines = []
