@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import logging
 from orders import send_order_to_novaengel
+import os
 
 app = Flask(__name__)
 
@@ -24,7 +25,7 @@ def health():
 def shopify_order_created():
     try:
         logging.info("🎯 Webhook Shopify reçu")
-        order = request.get_json()
+        order = request.get_json(force=True)
 
         send_order_to_novaengel(order)
 
@@ -36,4 +37,5 @@ def shopify_order_created():
 
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
