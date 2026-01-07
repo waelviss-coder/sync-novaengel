@@ -3,11 +3,12 @@ import logging
 import os
 
 # --------------------------------------------------
-# CONFIG FIXE
+# CONFIG
 # --------------------------------------------------
 NOVA_BASE_URL = "https://drop.novaengel.com/api"
+NOVA_USER = os.environ.get("NOVA_USER")
+NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
 LANG = "fr"
-session = requests.Session()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,31 +19,29 @@ logging.basicConfig(
 # LOGIN NOVA ENGEL
 # --------------------------------------------------
 def nova_login():
-    NOVA_USER = os.environ.get("NOVA_USER")
-    NOVA_PASSWORD = os.environ.get("NOVA_PASSWORD")
-
-    if not NOVA_USER or not NOVA_PASSWORD:
-        raise Exception("NOVA_USER ou NOVA_PASSWORD non définis")
-
     url = f"{NOVA_BASE_URL}/login"
-    payload = {"user": NOVA_USER, "password": NOVA_PASSWORD}
-    r = session.post(url, json=payload, timeout=30)
-    r.raise_for_status()
+    payload = {
+        "user": NOVA_USER,
+        "password": NOVA_PASSWORD
+    }
 
-    logging.info(f"Response Nova Engel login: {r.text}")
+    r = requests.post(url, json=payload, timeout=30)
+    r.raise_for_status()
 
     token = r.json().get("Token") or r.json().get("token")
     if not token:
         raise Exception("Token Nova Engel non reçu")
+
     logging.info("🔑 Token Nova Engel obtenu")
     return token
+
 
 # --------------------------------------------------
 # GET PRODUCT ID BY EAN (SKU)
 # --------------------------------------------------
 def get_product_id_by_ean(token, ean):
     url = f"{NOVA_BASE_URL}/products/availables/{token}/{LANG}"
-    r = session.get(url, timeout=60)
+    r = requests.get(url, timeout=60)
     r.raise_for_status()
 
     for p in r.json():
@@ -52,11 +51,13 @@ def get_product_id_by_ean(token, ean):
 
     raise Exception(f"EAN {ean} introuvable chez Nova Engel")
 
+
 # --------------------------------------------------
 # SEND ORDER TO NOVA ENGEL
 # --------------------------------------------------
 def send_order_to_novaengel(shopify_order):
     token = nova_login()
+
     lines = []
 
     for item in shopify_order.get("line_items", []):
@@ -98,7 +99,7 @@ def send_order_to_novaengel(shopify_order):
     logging.info(f"📤 Payload envoyé à Nova Engel: {payload}")
 
     url = f"{NOVA_BASE_URL}/orders/sendv2/{token}"
-    r = session.post(url, json=payload, timeout=60)
+    r = requests.post(url, json=payload, timeout=60)
     r.raise_for_status()
 
     logging.info(f"✅ Commande {payload[0]['orderNumber']} envoyée à Nova Engel")
