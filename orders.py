@@ -5,6 +5,7 @@ NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
 
 def get_novaengel_token():
+    """Récupère le token Nova Engel"""
     r = requests.post(
         "https://drop.novaengel.com/api/login",
         json={"user": NOVA_USER, "password": NOVA_PASS},
@@ -24,8 +25,14 @@ def get_novaengel_stock_map():
     r = requests.get(f"https://drop.novaengel.com/api/stock/update/{token}", timeout=60)
     r.raise_for_status()
     stock = r.json()
-    stock_map = {str(item.get("Id","")).strip().replace("'", ""): item.get("Stock",0) for item in stock if item.get("Id")}
+    stock_map = {str(item.get("Id","")).strip(): item.get("Stock",0) for item in stock if item.get("Id")}
     return stock_map, token
+
+def clean_sku(sku):
+    """Nettoie le SKU pour correspondre à l'Id Nova Engel"""
+    if not sku:
+        return ""
+    return sku.strip().lstrip("'").replace("'", "").replace(" ", "")
 
 def send_order_to_novaengel(order):
     """
@@ -37,10 +44,9 @@ def send_order_to_novaengel(order):
     # Préparer les items
     items = []
     for item in order.get("line_items", []):
-        sku = item.get("sku")
+        sku = clean_sku(item.get("sku"))
         if not sku:
             continue
-        sku = sku.strip().replace("'", "")
         if sku not in stock_map:
             print(f"⚠ SKU {sku} non trouvé dans Nova Engel, ignoré")
             continue
@@ -55,7 +61,7 @@ def send_order_to_novaengel(order):
         })
 
     if not items:
-        print("⚠ Aucun item valide à envoyer à Nova Engel")
+        print("⚠ Aucun item valide à envoyer → commande ignorée")
         return {"status": "no items sent"}
 
     shipping = order.get("shipping_address") or {}
