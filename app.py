@@ -3,26 +3,19 @@ import logging
 import os
 from orders import send_order_to_novaengel
 
-app = Flask(__name__)
+app = Flask(_name_)
 logging.basicConfig(level=logging.INFO)
 
 @app.route("/")
 def home():
-    return "<h3>Nova Engel Connector – READY ✅</h3>"
+    return "Nova Engel Connector – READY ✅"
 
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
-    try:
-        order = request.get_json(force=True)
-        logging.info(f"📦 Commande Shopify reçue : {order.get('name')}")
-        result = send_order_to_novaengel(order)
-        return jsonify({
-            "status": "sent to Nova Engel",
-            "result": result
-        }), 200
-    except Exception as e:
-        logging.exception("❌ Erreur Nova Engel")
-        return jsonify({"error": str(e)}), 500
+    order = request.get_json()
+    logging.info(f"Commande reçue: {order.get('name')}")
+    result = send_order_to_novaengel(order)
+    return jsonify(result), 200
 
-if __name__ == "__main__":
+if _name_ == "_main_":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
