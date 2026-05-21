@@ -1,34 +1,35 @@
 name: Sync NovaEngel → Shopify
 
-# Déclenche la sync toutes les heures
 on:
   schedule:
-    - cron: '0 * * * *'  # toutes les heures
-  workflow_dispatch:     # permet de lancer manuellement depuis GitHub
+    - cron: '0 * * * *'   # toutes les 60 minutes
+  workflow_dispatch:
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+
+    concurrency:
+      group: shopify-sync
+      cancel-in-progress: true
+
     env:
       SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
       SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
       NOVA_USER: ${{ secrets.NOVA_USER }}
       NOVA_PASS: ${{ secrets.NOVA_PASS }}
-      SECRET_KEY: pl0reals
+
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install requests
 
       - name: Run sync
-        run: |
-          python sync.py
+        run: python sync.py
