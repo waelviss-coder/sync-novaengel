@@ -2,7 +2,7 @@ name: Sync NovaEngel → Shopify
 
 on:
   schedule:
-    - cron: '0 * * * *'   # toutes les 60 minutes
+    - cron: '0 * * * *'   # chaque heure
   workflow_dispatch:
 
 jobs:
@@ -11,7 +11,9 @@ jobs:
 
     concurrency:
       group: shopify-sync
-      cancel-in-progress: true
+      cancel-in-progress: false
+
+    timeout-minutes: 360
 
     env:
       SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
