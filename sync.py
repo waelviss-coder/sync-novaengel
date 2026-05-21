@@ -1,11 +1,40 @@
 import requests
 import os
 import time
+import json
 
 SHOPIFY_STORE = os.environ.get("SHOPIFY_STORE")
 SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN")
 NOVA_USER = os.environ.get("NOVA_USER")
 NOVA_PASS = os.environ.get("NOVA_PASS")
+
+LOCK_FILE = "/tmp/shopify_sync_lock.json"
+
+
+# ===================== SAFE RUN CONTROL =====================
+def should_run_sync():
+    try:
+        if os.path.exists(LOCK_FILE):
+            with open(LOCK_FILE, "r") as f:
+                data = json.load(f)
+
+            last_run = data.get("last_run", 0)
+            now = time.time()
+
+            # 10 min minimum entre runs (évite spam + doublons)
+            if now - last_run < 600:
+                print("⏭️ Sync trop récente → skip")
+                return False
+
+        return True
+
+    except:
+        return True
+
+
+def save_last_run():
+    with open(LOCK_FILE, "w") as f:
+        json.dump({"last_run": time.time()}, f)
 
 
 # ================= NOVA ENGEL =================
@@ -36,7 +65,7 @@ def get_novaengel_stock():
     return r.json()
 
 
-# ================= SHOPIFY SAFE REQUEST =================
+# ================= SHOPIFY REQUEST =================
 def shopify_request(method, url, **kwargs):
     attempt = 0
 
@@ -45,9 +74,9 @@ def shopify_request(method, url, **kwargs):
             r = requests.request(method, url, **kwargs, timeout=30)
 
             if r.status_code == 429:
-                retry_after = float(r.headers.get("Retry-After", 2))
-                print(f"⚠️ Shopify 429 → wait {retry_after}s")
-                time.sleep(retry_after)
+                wait = float(r.headers.get("Retry-After", 2))
+                print(f"⚠️ 429 Shopify → wait {wait}s")
+                time.sleep(wait)
                 continue
 
             r.raise_for_status()
@@ -59,11 +88,11 @@ def shopify_request(method, url, **kwargs):
                 raise
 
             wait = 2 ** attempt
-            print(f"⚠️ retry {attempt}/5 → {wait}s : {e}")
+            print(f"⚠️ retry {attempt}/5 → {wait}s")
             time.sleep(wait)
 
 
-# ================= SHOPIFY PRODUCTS =================
+# ================= SHOPIFY =================
 def get_all_shopify_products():
     products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
@@ -122,7 +151,6 @@ def sync_all_products():
     shopify_products = get_all_shopify_products()
     location_id = get_shopify_location_id()
 
-    # map SKU → stock
     nova_map = {
         str(i.get("Id", "")).strip(): i.get("Stock", 0)
         for i in nova_stock
@@ -150,13 +178,13 @@ def sync_all_products():
             old_stock = variant.get("inventory_quantity", 0)
 
             # =====================
-            # SKU EXISTS IN NOVA
+            # EXISTE DANS NOVA
             # =====================
             if sku in nova_skus:
                 new_stock = nova_map.get(sku, 0)
 
                 if new_stock == old_stock:
-                    continue  # rien à faire
+                    continue
 
                 update_shopify_stock(inventory_item_id, location_id, new_stock)
 
@@ -165,7 +193,7 @@ def sync_all_products():
                 )
 
             # =====================
-            # SKU NOT IN NOVA
+            # N'EXISTE PAS DANS NOVA
             # =====================
             else:
                 if sku.startswith("i"):
@@ -188,5 +216,12 @@ def sync_all_products():
         print("Aucun changement")
 
 
+# ================= MAIN =================
 if __name__ == "__main__":
-    sync_all_products()
+    if should_run_sync():
+        try:
+            sync_all_products()
+        finally:
+            save_last_run()
+    else:
+        print("⏭️ Sync ignorée (lock actif)")
