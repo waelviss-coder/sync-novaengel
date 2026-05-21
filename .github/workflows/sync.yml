@@ -5,13 +5,13 @@ on:
     - cron: '0 * * * *'   # toutes les 60 minutes
   workflow_dispatch:
 
-concurrency:
-  group: shopify-sync
-  cancel-in-progress: true
-
 jobs:
   sync:
     runs-on: ubuntu-latest
+
+    concurrency:
+      group: shopify-sync
+      cancel-in-progress: true
 
     env:
       SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
