@@ -16,48 +16,54 @@ def get_novaengel_token():
         timeout=30
     )
     r.raise_for_status()
+
     token = r.json().get("Token") or r.json().get("token")
     if not token:
         raise Exception("Token NovaEngel manquant")
+
     return token
 
 
 def get_novaengel_stock():
     token = get_novaengel_token()
+
     r = requests.get(
         f"https://drop.novaengel.com/api/stock/update/{token}",
         timeout=60
     )
     r.raise_for_status()
+
     return r.json()
 
 
-# ================= SHOPIFY =================
+# ================= SHOPIFY SAFE REQUEST =================
 def shopify_request(method, url, **kwargs):
     attempt = 0
+
     while True:
         try:
             r = requests.request(method, url, **kwargs, timeout=30)
 
             if r.status_code == 429:
-                retry_after = r.headers.get("Retry-After", "5")
-                wait = max(float(retry_after), 5)
-                print(f"⚠️ 429 → attente {wait}s")
-                time.sleep(wait)
+                retry_after = float(r.headers.get("Retry-After", 2))
+                print(f"⚠️ Shopify 429 → wait {retry_after}s")
+                time.sleep(retry_after)
                 continue
 
             r.raise_for_status()
             return r
 
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             attempt += 1
             if attempt > 5:
                 raise
+
             wait = 2 ** attempt
             print(f"⚠️ retry {attempt}/5 → {wait}s : {e}")
             time.sleep(wait)
 
 
+# ================= SHOPIFY PRODUCTS =================
 def get_all_shopify_products():
     products = []
     url = f"https://{SHOPIFY_STORE}/admin/api/2024-10/products.json?limit=250"
@@ -66,11 +72,13 @@ def get_all_shopify_products():
     while url:
         r = shopify_request("GET", url, headers=headers)
         data = r.json()
+
         products.extend(data.get("products", []))
 
         url = None
-        link_header = r.headers.get("Link", "")
-        for part in link_header.split(","):
+        link = r.headers.get("Link", "")
+
+        for part in link.split(","):
             if 'rel="next"' in part:
                 url = part.split(";")[0].strip("<> ")
 
@@ -104,84 +112,80 @@ def update_shopify_stock(inventory_item_id, location_id, stock):
     }
 
     shopify_request("POST", url, json=payload, headers=headers)
-    time.sleep(0.1)
 
 
 # ================= SYNC =================
 def sync_all_products():
     modified = []
 
-    try:
-        nova_stock = get_novaengel_stock()
-        shopify_products = get_all_shopify_products()
-        location_id = get_shopify_location_id()
+    nova_stock = get_novaengel_stock()
+    shopify_products = get_all_shopify_products()
+    location_id = get_shopify_location_id()
 
-        nova_map = {
-            str(i.get("Id", "")).strip(): i.get("Stock", 0)
-            for i in nova_stock
-            if i.get("Id")
-        }
+    # map SKU → stock
+    nova_map = {
+        str(i.get("Id", "")).strip(): i.get("Stock", 0)
+        for i in nova_stock
+        if i.get("Id")
+    }
 
-        nova_skus = set(nova_map.keys())
+    nova_skus = set(nova_map.keys())
 
-        print(f"📦 Nova SKUs: {len(nova_skus)}")
-        print(f"🛍 Shopify products: {len(shopify_products)}")
+    print(f"📦 Nova SKUs: {len(nova_skus)}")
+    print(f"🛍 Shopify products: {len(shopify_products)}")
 
-        for product in shopify_products:
-            for variant in product.get("variants", []):
+    count = 0
 
-                sku = (variant.get("sku") or "").strip().replace("'", "")
-                if not sku:
+    for product in shopify_products:
+        count += 1
+        print(f"🔄 Product {count}/{len(shopify_products)}")
+
+        for variant in product.get("variants", []):
+
+            sku = (variant.get("sku") or "").strip().replace("'", "")
+            if not sku:
+                continue
+
+            inventory_item_id = variant["inventory_item_id"]
+            old_stock = variant.get("inventory_quantity", 0)
+
+            # =====================
+            # SKU EXISTS IN NOVA
+            # =====================
+            if sku in nova_skus:
+                new_stock = nova_map.get(sku, 0)
+
+                if new_stock == old_stock:
+                    continue  # rien à faire
+
+                update_shopify_stock(inventory_item_id, location_id, new_stock)
+
+                modified.append(
+                    f"UPDATE | {product['title']} | {sku}: {old_stock} → {new_stock}"
+                )
+
+            # =====================
+            # SKU NOT IN NOVA
+            # =====================
+            else:
+                if sku.startswith("i"):
                     continue
 
-                inventory_item_id = variant["inventory_item_id"]
-                old_stock = variant["inventory_quantity"]
+                if old_stock == 0:
+                    continue
 
-                # =========================
-                # 1. SKU EXISTE DANS NOVA → UPDATE STOCK
-                # =========================
-                if sku in nova_skus:
-                    new_stock = nova_map.get(sku, 0)
+                update_shopify_stock(inventory_item_id, location_id, 0)
 
-                    if new_stock != old_stock:
-                        update_shopify_stock(
-                            inventory_item_id,
-                            location_id,
-                            new_stock
-                        )
+                modified.append(
+                    f"DISABLE | {product['title']} | {sku}"
+                )
 
-                        modified.append(
-                            f"UPDATE | {product['title']} | {sku}: {old_stock} → {new_stock}"
-                        )
+    print("\n✅ SYNC TERMINÉE")
 
-                # =========================
-                # 2. SKU NON NOVA
-                # =========================
-                else:
-                    # 🚫 EXCEPTION: SKU "i"
-                    if sku.startswith("i"):
-                        continue
-
-                    # désactivation (safe)
-                    update_shopify_stock(
-                        inventory_item_id,
-                        location_id,
-                        0
-                    )
-
-                    modified.append(
-                        f"DISABLE | {product['title']} | {sku}"
-                    )
-
-        print("✅ Sync terminée")
-
-        if modified:
-            print("\n".join(modified))
-        else:
-            print("Aucun changement")
-
-    except Exception as e:
-        print(f"❌ Erreur sync: {e}")
+    if modified:
+        print("\n".join(modified))
+    else:
+        print("Aucun changement")
 
 
 if __name__ == "__main__":
