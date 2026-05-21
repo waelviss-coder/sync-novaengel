@@ -2,7 +2,7 @@ name: Sync NovaEngel → Shopify
 
 on:
   schedule:
-    - cron: '0 * * * *'   # chaque heure
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -20,6 +20,8 @@ jobs:
       SHOPIFY_ACCESS_TOKEN: ${{ secrets.SHOPIFY_ACCESS_TOKEN }}
       NOVA_USER: ${{ secrets.NOVA_USER }}
       NOVA_PASS: ${{ secrets.NOVA_PASS }}
+
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout repo
