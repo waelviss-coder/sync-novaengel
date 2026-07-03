@@ -9,13 +9,15 @@ USER = os.environ["NOVA_USER"]
 PASS = os.environ["NOVA_PASS"]
 
 
-# ====================================
-# COUNTRY NORMALIZATION
-# ====================================
+# ==========================================
+# HELPERS
+# ==========================================
+
 def normalize_country(code):
     """
-    Shopify already sends ISO country codes:
-    US, FR, ES, DE, IT, TN...
+    Nova requires ISO country codes.
+    Shopify already provides them.
+    Example: US, FR, ES, DE...
     """
     if not code:
         return ""
@@ -23,9 +25,43 @@ def normalize_country(code):
     return code.strip().upper()
 
 
-# ====================================
+def clean_phone(phone):
+    """
+    Keep only digits.
+    """
+    if not phone:
+        return ""
+
+    return re.sub(r"\D", "", str(phone))
+
+
+def clean_text(text, max_length=100):
+    if not text:
+        return ""
+
+    return str(text).strip()[:max_length]
+
+
+def numeric_order_number(name):
+    """
+    Nova only accepts numeric order numbers
+    with a maximum length of 15 digits.
+    """
+
+    number = re.sub(r"\D", "", str(name))
+
+    if not number:
+        raise Exception(
+            f"Invalid order number: {name}"
+        )
+
+    return number[-15:]
+
+
+# ==========================================
 # LOGIN
-# ====================================
+# ==========================================
+
 def login():
 
     r = requests.post(
@@ -49,9 +85,10 @@ def login():
     return token
 
 
-# ====================================
-# LOAD STOCK
-# ====================================
+# ==========================================
+# STOCK
+# ==========================================
+
 def get_stock(token):
 
     r = requests.get(
@@ -64,30 +101,19 @@ def get_stock(token):
     data = r.json()
 
     return {
-        str(p["Id"]).strip(): int(p.get("Stock", 0))
+        str(p.get("Id")).strip():
+        int(p.get("Stock", 0))
+
         for p in data
+
         if p.get("Id") is not None
     }
 
 
-# ====================================
-# CLEAN ORDER NUMBER
-# ====================================
-def numeric_order_number(name):
-
-    number = re.sub(r"\D", "", str(name))
-
-    if not number:
-        raise Exception(
-            f"Invalid order number: {name}"
-        )
-
-    return number[-15:]
-
-
-# ====================================
+# ==========================================
 # SEND ORDER
-# ====================================
+# ==========================================
+
 def send_order_to_novaengel(order):
 
     try:
@@ -104,37 +130,50 @@ def send_order_to_novaengel(order):
 
         for item in order.get("line_items", []):
 
-            sku = (item.get("sku") or "").strip()
+            sku = (
+                item.get("sku") or ""
+            ).strip()
+
             title = item.get("title", "")
 
-            logging.info(f"🔎 ITEM: {sku} | {title}")
+            logging.info(
+                f"🔎 ITEM: {sku} | {title}"
+            )
 
-            # skip empty SKU
+            # Empty SKU
             if not sku:
+
                 logging.warning(
                     "⚠️ Empty SKU skipped"
                 )
+
                 continue
 
-            # skip service products
+            # Service products
             if item.get("product_id") is None:
+
                 logging.warning(
                     f"⚠️ Service product skipped: {sku}"
                 )
+
                 continue
 
-            # SKU not found
+            # Unknown SKU
             if sku not in stock:
+
                 logging.warning(
                     f"❌ SKU not found in Nova: {sku}"
                 )
+
                 continue
 
-            # no stock
+            # Out of stock
             if stock[sku] <= 0:
+
                 logging.warning(
                     f"⚠️ Out of stock: {sku}"
                 )
+
                 continue
 
             try:
@@ -152,19 +191,21 @@ def send_order_to_novaengel(order):
                     f"⚠️ Invalid SKU format: {sku}"
                 )
 
+                continue
+
         if not lines:
 
             logging.error(
-                "❌ No valid products to send"
+                "❌ No valid products found"
             )
 
             return {
                 "status": "no_valid_items"
             }
 
-        # --------------------------------
+        # ==================================
         # SHIPPING ADDRESS
-        # --------------------------------
+        # ==================================
 
         shipping = (
             order.get("shipping_address")
@@ -172,59 +213,99 @@ def send_order_to_novaengel(order):
         )
 
         if not shipping:
+
             raise Exception(
                 "Missing shipping address"
             )
 
         country = normalize_country(
-            shipping.get("country_code", "")
+            shipping.get(
+                "country_code",
+                ""
+            )
         )
 
-        logging.info(
-            f"🌍 Country sent to Nova: {country}"
+        phone = clean_phone(
+            shipping.get("phone", "")
         )
+
+        street = (
+            f"{shipping.get('address1', '')} "
+            f"{shipping.get('address2', '')}"
+        ).strip()
 
         payload = [{
-            "orderNumber": numeric_order_number(
-                order.get("name", "")
-            ),
+
+            "orderNumber":
+                numeric_order_number(
+                    order.get("name", "")
+                ),
+
+            "valoration": 0,
+
+            "carrierNotes": "",
 
             "lines": lines,
 
-            "name": shipping.get(
-                "first_name", ""
-            ),
+            "name":
+                clean_text(
+                    shipping.get(
+                        "first_name", ""
+                    ),
+                    50
+                ),
 
-            "secondName": shipping.get(
-                "last_name", ""
-            ),
+            "secondName":
+                clean_text(
+                    shipping.get(
+                        "last_name", ""
+                    ),
+                    50
+                ),
 
-            "telephone": shipping.get(
-                "phone", ""
-            ),
+            "telephone":
+                phone,
 
-            "mobile": shipping.get(
-                "phone", ""
-            ),
+            "mobile":
+                phone,
 
-            "street": shipping.get(
-                "address1", ""
-            ),
+            "street":
+                clean_text(
+                    street,
+                    120
+                ),
 
-            "city": shipping.get(
-                "city", ""
-            ),
+            "city":
+                clean_text(
+                    shipping.get(
+                        "city", ""
+                    ),
+                    50
+                ),
 
-            "county": shipping.get(
-                "province", ""
-            ),
+            "county":
+                clean_text(
+                    shipping.get(
+                        "province", ""
+                    ),
+                    50
+                ),
 
-            "postalCode": shipping.get(
-                "zip", ""
-            ),
+            "postalCode":
+                clean_text(
+                    shipping.get(
+                        "zip", ""
+                    ).replace(" ", ""),
+                    20
+                ),
 
-            "country": country
+            "country":
+                country
         }]
+
+        logging.info(
+            f"🌍 Country sent: {country}"
+        )
 
         logging.info(
             f"🚀 Sending to Nova: {payload}"
@@ -233,6 +314,10 @@ def send_order_to_novaengel(order):
         r = requests.post(
             f"{BASE_URL}/orders/sendv2/{token}",
             json=payload,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json"
+            },
             timeout=60
         )
 
@@ -242,6 +327,7 @@ def send_order_to_novaengel(order):
 
         try:
             result = r.json()
+
         except Exception:
             result = r.text
 
@@ -249,10 +335,11 @@ def send_order_to_novaengel(order):
             f"📩 Nova response: {result}"
         )
 
-        # Nova business error
+        # Business error returned by Nova
+
         if (
             isinstance(result, list)
-            and result
+            and len(result) > 0
             and result[0].get("Message") == "KO"
         ):
 
