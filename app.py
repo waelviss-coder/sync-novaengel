@@ -13,8 +13,18 @@ def home():
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
     order = request.get_json(force=True)
+
     logging.info(f"📦 Commande Shopify reçue : {order.get('name')}")
-    result = send_order_to_novaengel(order)
+    logging.info(f"FULL ORDER: {order}")   # 👈 AJOUT IMPORTANT
+
+    try:
+        result = send_order_to_novaengel(order)
+        logging.info(f"RESULT NOVA: {result}")  # 👈 AJOUT IMPORTANT
+
+    except Exception as e:
+        logging.error(f"❌ ERREUR NOVA: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
     return jsonify({
         "status": "sent to Nova Engel",
         "result": result
