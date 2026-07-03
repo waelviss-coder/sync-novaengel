@@ -3,32 +3,46 @@ import logging
 import os
 from orders import send_order_to_novaengel
 
-app = Flask(__name__)   # ✅ CORRECT
-logging.basicConfig(level=logging.INFO)
+app = Flask(__name__)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
 
 @app.route("/")
 def home():
-    return "<h3>Nova Engel Connector – READY ✅</h3>"
+    return "Nova Engel Connector READY"
 
 @app.route("/shopify/order-created", methods=["POST"])
 def shopify_order_created():
-    order = request.get_json(force=True)
 
-    logging.info(f"📦 Commande Shopify reçue : {order.get('name')}")
-    logging.info(f"FULL ORDER: {order}")   # 👈 AJOUT IMPORTANT
+    order = request.get_json(silent=True)
+
+    if not order:
+        logging.error("❌ Invalid Shopify payload")
+        return jsonify({"error": "invalid payload"}), 400
+
+    logging.info(f"📦 Order received: {order.get('name')}")
 
     try:
         result = send_order_to_novaengel(order)
-        logging.info(f"RESULT NOVA: {result}")  # 👈 AJOUT IMPORTANT
+
+        logging.info(f"📩 Nova result: {result}")
+
+        return jsonify({
+            "status": "ok",
+            "result": result
+        }), 200
 
     except Exception as e:
-        logging.error(f"❌ ERREUR NOVA: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        logging.exception("❌ Nova processing error")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
 
-    return jsonify({
-        "status": "sent to Nova Engel",
-        "result": result
-    }), 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
